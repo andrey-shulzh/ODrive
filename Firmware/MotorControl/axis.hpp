@@ -14,6 +14,7 @@ class Axis;
 #include "low_level.h"
 #include "utils.hpp"
 #include "task_timer.hpp"
+#include "calibrator.hpp"
 
 #include <array>
 
@@ -130,7 +131,8 @@ public:
             TrapezoidalTrajectory& trap,
             Endstop& min_endstop,
             Endstop& max_endstop,
-            MechanicalBrake& mechanical_brake);
+            MechanicalBrake& mechanical_brake,
+            Calibrator& calibrator);
 
     bool apply_config();
     void clear_config();
@@ -183,6 +185,7 @@ public:
     Endstop& min_endstop_;
     Endstop& max_endstop_;
     MechanicalBrake& mechanical_brake_;
+    Calibrator& calibrator_;
     TaskTimes task_times_;
 
     osThreadId thread_id_ = 0;

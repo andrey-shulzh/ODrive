@@ -33,9 +33,28 @@ bool Encoder::apply_config(ODriveIntf::MotorIntf::MotorType motor_type) {
     return true;
 }
 
+#if ENC_TIME_FROM_GPIO
+static void enc_phaseAB_cb_wrapper(void* ctx) {
+    reinterpret_cast<Encoder*>(ctx)->enc_phaseAB_cb();
+}
+void Encoder::enc_phaseAB_cb() {
+    const uint32_t curr_time = DWT->CYCCNT;
+    const int16_t enc_count = (int16_t)timer_->Instance->CNT;
+    if (enc_count != last_enc_count_)
+    {
+        last_enc_count_ = enc_count;
+        last_enc_time_ = curr_time;
+    }
+}
+#endif
+
 void Encoder::setup() {
     HAL_TIM_Encoder_Start(timer_, TIM_CHANNEL_ALL);
     set_idx_subscribe();
+#if ENC_TIME_FROM_GPIO
+    hallA_gpio_.subscribe(true, true, enc_phaseAB_cb_wrapper, this);
+    hallB_gpio_.subscribe(true, true, enc_phaseAB_cb_wrapper, this);
+#endif
 
     mode_ = config_.mode;
 

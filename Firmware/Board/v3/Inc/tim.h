@@ -82,6 +82,11 @@ void MX_TIM4_Init(void);
 void MX_TIM5_Init(void);
 void MX_TIM8_Init(void);
 void MX_TIM13_Init(void);
+
+#if ENC_TIME_FROM_TIMER
+extern TIM_HandleTypeDef htim7;
+void MX_TIM7_Init(void);
+#endif
                         
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
                                                             

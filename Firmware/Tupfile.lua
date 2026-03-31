@@ -74,6 +74,7 @@ odrive_firmware_pkg = {
         'MotorControl/arm_cos_f32.c',
         'MotorControl/low_level.cpp',
         'MotorControl/axis.cpp',
+        'MotorControl/calibrator.cpp',
         'MotorControl/motor.cpp',
         'MotorControl/thermistor.cpp',
         'MotorControl/encoder.cpp',

@@ -63,6 +63,9 @@ public:
     void set_error(Error error);
     bool do_checks();
 
+#if ENC_TIME_FROM_GPIO
+    void enc_phaseAB_cb();
+#endif    
     void enc_index_cb();
     void set_idx_subscribe(bool override_enable = false);
     void update_pll_gains();
@@ -149,6 +152,10 @@ public:
         return 1.0f / 3600.0f;
     }
 
+#if ENC_TIME_FROM_GPIO
+    volatile uint32_t last_enc_time_ = 0;
+    volatile int16_t last_enc_count_ = 0;
+#endif
 };
 
 #endif // __ENCODER_HPP

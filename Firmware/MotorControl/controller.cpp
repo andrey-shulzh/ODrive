@@ -141,14 +141,65 @@ static float limitVel(const float vel_limit, const float vel_estimate, const flo
 }
 
 bool Controller::update() {
-    std::optional<float> pos_estimate_linear = pos_estimate_linear_src_.present();
-    std::optional<float> pos_estimate_circular = pos_estimate_circular_src_.present();
-    std::optional<float> pos_wrap = pos_wrap_src_.present();
-    std::optional<float> vel_estimate = vel_estimate_src_.present();
+    std::optional<float> inp_phase = phase_src_.present();
+    std::optional<float> inp_phase_vel = phase_vel_src_.present();
 
-    std::optional<float> anticogging_pos_estimate = axis_->encoder_.pos_estimate_.present();
-    std::optional<float> anticogging_vel_estimate = axis_->encoder_.vel_estimate_.present();
+    float Iq_set = 0.0f;
+    float Id_set = 0.0f;
 
+    const float I_break = 3.0f;
+    const float I_limit = 21.0f;
+
+    constexpr float sin_15 = 0.258819f;
+    constexpr float rad_15 = 15 * (M_PI / 180.0f);
+
+    const float center_enc_pos = axis_->calibrator_.center_enc_pos_;
+    const float curr_enc_pos = float(axis_->encoder_.shadow_count_) + 0.5f; // for now just simple center-aligned position
+
+    const float enc_15_delta = rad_15 * axis_->calibrator_.phase2enc_;
+
+    const float enc_from_center = curr_enc_pos - center_enc_pos;
+    if (std::abs(enc_from_center) < enc_15_delta) {
+        // breakout zone
+        const float s = std::abs(enc_from_center) / enc_15_delta;
+        Id_set = I_break * s / sin_15;
+        Iq_set = 0.0f;
+
+        phase_ = wrap_pm_pi(axis_->calibrator_.center_phase_);
+        phase_vel_ = 0.0f;
+    } else {
+        // force curve zone
+        if (enc_from_center >= enc_15_delta) {
+            const float center_hi = center_enc_pos + enc_15_delta;
+            const float s = (curr_enc_pos - center_hi) / (axis_->calibrator_.hi_enc_pos_ - center_hi);
+            Iq_set = -(I_break + s * (I_limit - I_break));
+        } else {
+            const float center_lo = center_enc_pos - enc_15_delta;
+            const float s = (curr_enc_pos - center_lo) / (axis_->calibrator_.lo_enc_pos_ - center_lo);
+            Iq_set = +(I_break + s * (I_limit - I_break));
+        }
+        Id_set = 0.0f;
+        const float phase_from_center = std::abs(enc_from_center * axis_->calibrator_.enc2phase_);
+        if (phase_from_center < M_PI * 0.5f) {
+            // 90 degree Id fade off
+            Id_set = std::abs(Iq_set) * cosf(phase_from_center) / sinf(phase_from_center);
+        }
+        phase_ = *inp_phase;
+        phase_vel_ = *inp_phase_vel;
+    }
+
+    if (config_.anticogging.anticogging_enabled) {
+        // anti-cogging
+        Iq_set += axis_->calibrator_.sample_I_cog_map(curr_enc_pos);
+    }
+
+    const float Id_hd = axis_->calibrator_.sample_Id_hd_map(curr_enc_pos);
+    Iq_set -= Id_set * Id_hd; // compensate Id harmonic distortions
+
+    Idq_setpoint_ = {Id_set, Iq_set};
+    Vdq_setpoint_ = {0.0f, 0.0f};
+    return true;
+#if 0
     if (axis_->step_dir_active_) {
         if (config_.circular_setpoints) {
             if (!pos_wrap.has_value()) {
@@ -448,4 +499,5 @@ bool Controller::update() {
     // calibration would leave the controller in an error state.
     error_ &= ~ERROR_INVALID_ESTIMATE;
     return true;
+#endif    
 }

@@ -95,21 +95,26 @@ Motor motors[AXIS_COUNT] = {
 
 Encoder encoders[AXIS_COUNT] = {
     {
-        &htim3, // timer
-        {M0_ENC_Z_GPIO_Port, M0_ENC_Z_Pin}, // index_gpio
-        {M0_ENC_A_GPIO_Port, M0_ENC_A_Pin}, // hallA_gpio
-        {M0_ENC_B_GPIO_Port, M0_ENC_B_Pin}, // hallB_gpio
-        {M0_ENC_Z_GPIO_Port, M0_ENC_Z_Pin}, // hallC_gpio
-        &spi3_arbiter // spi_arbiter
-    },
-    {
         &htim4, // timer
         {M1_ENC_Z_GPIO_Port, M1_ENC_Z_Pin}, // index_gpio
         {M1_ENC_A_GPIO_Port, M1_ENC_A_Pin}, // hallA_gpio
         {M1_ENC_B_GPIO_Port, M1_ENC_B_Pin}, // hallB_gpio
         {M1_ENC_Z_GPIO_Port, M1_ENC_Z_Pin}, // hallC_gpio
         &spi3_arbiter // spi_arbiter
+    },
+    {
+        &htim3, // timer
+        {M0_ENC_Z_GPIO_Port, M0_ENC_Z_Pin}, // index_gpio
+        {M0_ENC_A_GPIO_Port, M0_ENC_A_Pin}, // hallA_gpio
+        {M0_ENC_B_GPIO_Port, M0_ENC_B_Pin}, // hallB_gpio
+        {M0_ENC_Z_GPIO_Port, M0_ENC_Z_Pin}, // hallC_gpio
+        &spi3_arbiter // spi_arbiter
     }
+};
+
+Calibrator calibrators[AXIS_COUNT] = {
+    {},
+    {}
 };
 
 // TODO: this has no hardware dependency and should be allocated depending on config
@@ -133,6 +138,7 @@ std::array<Axis, AXIS_COUNT> axes{{
         trap[0], // trap
         endstops[0], endstops[1], // min_endstop, max_endstop
         mechanical_brakes[0], // mechanical brake
+        calibrators[0],
     },
     {
         1, // axis_num
@@ -151,6 +157,7 @@ std::array<Axis, AXIS_COUNT> axes{{
         trap[1], // trap
         endstops[2], endstops[3], // min_endstop, max_endstop
         mechanical_brakes[1], // mechanical brake
+        calibrators[1],
     },
 }};
 
@@ -306,26 +313,38 @@ bool board_init() {
     MX_TIM13_Init();
 
     // External interrupt lines are individually enabled in stm32_gpio.cpp
-    HAL_NVIC_SetPriority(EXTI0_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(EXTI0_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-    HAL_NVIC_SetPriority(EXTI1_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(EXTI1_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-    HAL_NVIC_SetPriority(EXTI2_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(EXTI2_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(EXTI2_IRQn);
-    HAL_NVIC_SetPriority(EXTI3_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(EXTI3_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(EXTI3_IRQn);
-    HAL_NVIC_SetPriority(EXTI4_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(EXTI4_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(EXTI4_IRQn);
-    HAL_NVIC_SetPriority(EXTI9_5_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
-    HAL_NVIC_SetPriority(EXTI15_10_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(EXTI15_10_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
     HAL_NVIC_SetPriority(ControlLoop_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(ControlLoop_IRQn);
 
-    HAL_NVIC_SetPriority(TIM8_UP_TIM13_IRQn, 0, 0);
+    HAL_NVIC_SetPriority(TIM8_UP_TIM13_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
+
+    // turn on DWT
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    //
+#if ENC_TIME_FROM_TIMER
+    MX_TIM7_Init();
+    HAL_NVIC_SetPriority(TIM7_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(TIM7_IRQn);
+    HAL_TIM_Base_Start_IT(&htim7); 
+#endif
 
     if (odrv.config_.enable_uart_a) {
         uart_a->Init.BaudRate = odrv.config_.uart_a_baudrate;
@@ -470,6 +489,29 @@ void TIM5_IRQHandler(void) {
     COUNT_IRQ(TIM5_IRQn);
     pwm0_input.on_capture();
 }
+
+#if ENC_TIME_FROM_TIMER
+volatile uint32_t _enc_last_time[2] __attribute__((section(".ccmram")));
+volatile int16_t _enc_last_count[2] __attribute__((section(".ccmram")));
+
+void TIM7_IRQHandler(void) {
+    TIM7->SR = ~TIM_SR_UIF;
+
+    const uint32_t curr_time = DWT->CYCCNT;
+    
+    const int16_t count0 = int16_t(TIM4->CNT);
+    if (count0 != _enc_last_count[0]) {
+        _enc_last_count[0] = count0;
+        _enc_last_time[0] = curr_time;
+    }
+
+    const int16_t count1 = int16_t(TIM3->CNT);
+    if (count1 != _enc_last_count[1]) {
+        _enc_last_count[1] = count1;
+        _enc_last_time[1] = curr_time;
+    }
+}
+#endif
 
 volatile uint32_t timestamp_ = 0;
 volatile bool counting_down_ = false;

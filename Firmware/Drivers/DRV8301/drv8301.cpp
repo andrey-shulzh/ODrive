@@ -45,7 +45,8 @@ bool Drv8301::config(float requested_gain, float* actual_gain) {
         | (0b01 << 4) // OCP_MODE: latch shut down
         | (0b0 << 3) // 6x PWM mode
         | (0b0 << 2) // don't reset latched faults
-        | (0b00 << 0); // gate-drive peak current: 1.7A
+//        | (0b00 << 0); // gate-drive peak current: 1.7A
+        | (0b10 << 0); // gate-drive peak current: 0.25A
 
     new_config.control_register_2 =
           (0b0 << 6) // OC_TOFF: cycle by cycle

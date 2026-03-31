@@ -133,6 +133,9 @@ public:
     OutputPort<float2D> Idq_setpoint_ = {{0.0f, 0.0f}}; // fed to the FOC
     
     PhaseControlLaw<3>* control_law_;
+
+    // debug
+    Iph_ABC_t calib_variance = {0.0f, 0.0f, 0.0f};
 };
 
 

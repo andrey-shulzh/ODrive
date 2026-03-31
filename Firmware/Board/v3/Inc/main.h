@@ -65,6 +65,9 @@
 #else
 /* USER CODE END Includes */
 
+#define ENC_TIME_FROM_TIMER 0
+#define ENC_TIME_FROM_GPIO  1
+
 /* Private define ------------------------------------------------------------*/
 #define TIM_1_8_CLOCK_HZ 168000000
 #define TIM_1_8_PERIOD_CLOCKS 3500

@@ -428,8 +428,10 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
             axis.motor_.motor_thermistor_.update();
         }
 
-        MEASURE_TIME(axis.task_times_.encoder_update)
+        MEASURE_TIME(axis.task_times_.encoder_update) {
             axis.encoder_.update();
+            axis.calibrator_.update(timestamp);
+        }
     }
 
     // Controller of either axis might use the encoder estimate of the other
@@ -584,7 +586,30 @@ static void rtos_main(void*) {
     }
 
     odrv.system_stats_.fully_booted = true;
+#if 0
+    for (;;) {
+        printf("M0: %.4f, %.4f | M1: %.4f, %.4f\r\n",
+                sqrtf(axes[0].motor_.calib_variance.phB), sqrtf(axes[0].motor_.calib_variance.phC),
+                sqrtf(axes[1].motor_.calib_variance.phB), sqrtf(axes[1].motor_.calib_variance.phC)
+        );
+        osDelay(500);
+    }
+#endif
+#if 0
+    extern volatile uint32_t _enc_last_time[2];
+    extern volatile int16_t _enc_last_count[2];
 
+    for (;;) {
+        uint32_t enc_time0, enc_time1;
+        int16_t enc_count0, enc_count1;
+        CRITICAL_SECTION() {
+            enc_time0 = _enc_last_time[0]; enc_time1 = _enc_last_time[1];
+            enc_count0 = _enc_last_count[0]; enc_count1 = _enc_last_count[1];
+        }
+        printf("%u %d %u %d\n", enc_time0, (int)enc_count0, enc_time1, (int)enc_count1);
+        osDelay(100);
+    }
+#endif        
     // Main thread finished starting everything and can delete itself now (yes this is legal).
     vTaskDelete(defaultTaskHandle);
 }

@@ -18,7 +18,8 @@ Axis::Axis(int axis_num,
            TrapezoidalTrajectory& trap,
            Endstop& min_endstop,
            Endstop& max_endstop,
-           MechanicalBrake& mechanical_brake)
+           MechanicalBrake& mechanical_brake,
+           Calibrator& calibrator)
     : axis_num_(axis_num),
       default_step_gpio_pin_(default_step_gpio_pin),
       default_dir_gpio_pin_(default_dir_gpio_pin),
@@ -30,7 +31,8 @@ Axis::Axis(int axis_num,
       trap_traj_(trap),
       min_endstop_(min_endstop),
       max_endstop_(max_endstop),
-      mechanical_brake_(mechanical_brake)
+      mechanical_brake_(mechanical_brake),
+      calibrator_(calibrator)
 {
     encoder_.axis_ = this;
     sensorless_estimator_.axis_ = this;
@@ -40,6 +42,7 @@ Axis::Axis(int axis_num,
     min_endstop_.axis_ = this;
     max_endstop_.axis_ = this;
     mechanical_brake_.axis_ = this;
+    calibrator_.axis_ = this;
 }
 
 Axis::LockinConfig_t Axis::default_calibration() {
@@ -255,28 +258,17 @@ bool Axis::run_lockin_spin(const LockinConfig_t &lockin_config, bool remain_arme
 
 
 bool Axis::start_closed_loop_control() {
-    bool sensorless_mode = config_.enable_sensorless_mode;
-
-    if (sensorless_mode) {
-        // TODO: restart if desired
-        if (!run_lockin_spin(config_.sensorless_ramp, true)) {
-            return false;
-        }
-    }
-
     // Hook up the data paths between the components
     CRITICAL_SECTION() {
-        if (sensorless_mode) {
-            controller_.pos_estimate_linear_src_.disconnect();
-            controller_.pos_estimate_circular_src_.disconnect();
-            controller_.pos_wrap_src_.disconnect();
-            controller_.vel_estimate_src_.connect_to(&sensorless_estimator_.vel_estimate_);
-        } else if (controller_.config_.load_encoder_axis < AXIS_COUNT) {
+        if (controller_.config_.load_encoder_axis < AXIS_COUNT) {
             Axis* ax = &axes[controller_.config_.load_encoder_axis];
             controller_.pos_estimate_circular_src_.connect_to(&ax->encoder_.pos_circular_);
             controller_.pos_wrap_src_.connect_to(&controller_.config_.circular_setpoint_range);
             controller_.pos_estimate_linear_src_.connect_to(&ax->encoder_.pos_estimate_);
             controller_.vel_estimate_src_.connect_to(&ax->encoder_.vel_estimate_);
+            //
+            controller_.phase_src_.connect_to(&ax->encoder_.phase_);
+            controller_.phase_vel_src_.connect_to(&ax->encoder_.phase_vel_);
         } else {
             controller_.pos_estimate_circular_src_.disconnect();
             controller_.pos_estimate_linear_src_.disconnect();
@@ -294,32 +286,19 @@ bool Axis::start_closed_loop_control() {
         controller_.vel_integrator_torque_ = 0.0f;
 
         motor_.torque_setpoint_src_.connect_to(&controller_.torque_output_);
-        motor_.direction_ = sensorless_mode ? 1.0f : encoder_.config_.direction;
+        motor_.direction_ = encoder_.config_.direction;
 
-        motor_.current_control_.enable_current_control_src_ = motor_.config_.motor_type != Motor::MOTOR_TYPE_GIMBAL;
-        motor_.current_control_.Idq_setpoint_src_.connect_to(&motor_.Idq_setpoint_);
-        motor_.current_control_.Vdq_setpoint_src_.connect_to(&motor_.Vdq_setpoint_);
+        motor_.current_control_.enable_current_control_src_ = true;
+        motor_.current_control_.Idq_setpoint_src_.connect_to(&controller_.Idq_setpoint_);
+        motor_.current_control_.Vdq_setpoint_src_.connect_to(&controller_.Vdq_setpoint_);
 
-        bool is_acim = motor_.config_.motor_type == Motor::MOTOR_TYPE_ACIM;
         // phase
-        OutputPort<float>* phase_src = sensorless_mode ? &sensorless_estimator_.phase_ : &encoder_.phase_;
-        acim_estimator_.rotor_phase_src_.connect_to(phase_src);
-        OutputPort<float>* stator_phase_src = is_acim ? &acim_estimator_.stator_phase_ : phase_src;
-        motor_.current_control_.phase_src_.connect_to(stator_phase_src);
+        OutputPort<float>* phase_src = &controller_.phase_;
+        motor_.current_control_.phase_src_.connect_to(phase_src);
         // phase vel
-        OutputPort<float>* phase_vel_src = sensorless_mode ? &sensorless_estimator_.phase_vel_ : &encoder_.phase_vel_;
-        acim_estimator_.rotor_phase_vel_src_.connect_to(phase_vel_src);
-        OutputPort<float>* stator_phase_vel_src = is_acim ? &acim_estimator_.stator_phase_vel_ : phase_vel_src;
-        motor_.phase_vel_src_.connect_to(stator_phase_vel_src);
-        motor_.current_control_.phase_vel_src_.connect_to(stator_phase_vel_src);
-        
-        if (sensorless_mode) {
-            // Make the final velocity of the loĉk-in spin the setpoint of the
-            // closed loop controller to allow for smooth transition.
-            float vel = config_.sensorless_ramp.vel / (2.0f * M_PI * motor_.config_.pole_pairs);
-            controller_.input_vel_ = vel;
-            controller_.vel_setpoint_ = vel;
-        }
+        OutputPort<float>* phase_vel_src = &controller_.phase_vel_;
+        motor_.phase_vel_src_.connect_to(phase_vel_src);
+        motor_.current_control_.phase_vel_src_.connect_to(phase_vel_src);
     }
 
     // In sensorless mode the motor is already armed.
@@ -558,7 +537,8 @@ void Axis::run_state_machine_loop() {
                 //    goto invalid_state_label;
                 if (!motor_.is_calibrated_)
                     goto invalid_state_label;
-                status = encoder_.run_offset_calibration();
+                //status = encoder_.run_offset_calibration();
+                status = calibrator_.run_offset_calibration();
             } break;
 
             case AXIS_STATE_LOCKIN_SPIN: {

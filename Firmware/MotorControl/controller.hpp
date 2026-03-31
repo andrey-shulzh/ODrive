@@ -98,6 +98,9 @@ public:
     float last_error_time_ = 0.0f;
 
     // Inputs
+    InputPort<float> phase_src_;
+    InputPort<float> phase_vel_src_;
+
     InputPort<float> pos_estimate_linear_src_;
     InputPort<float> pos_estimate_circular_src_;
     InputPort<float> vel_estimate_src_;
@@ -127,6 +130,12 @@ public:
     float electrical_power_ = 0.0f; // [W]
 
     // Outputs
+    OutputPort<float> phase_ = 0.0f;     // [rad]
+    OutputPort<float> phase_vel_ = 0.0f; // [rad/s]
+
+    OutputPort<float2D> Vdq_setpoint_ = {{0.0f, 0.0f}}; // fed to the FOC
+    OutputPort<float2D> Idq_setpoint_ = {{0.0f, 0.0f}}; // fed to the FOC
+
     OutputPort<float> torque_output_ = 0.0f;
 
     // custom setters

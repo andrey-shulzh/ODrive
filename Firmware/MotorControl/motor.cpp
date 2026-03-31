@@ -511,6 +511,7 @@ bool Motor::run_calibration() {
 }
 
 void Motor::update(uint32_t timestamp) {
+#if 0    
     // Load torque setpoint, convert to motor direction
     std::optional<float> maybe_torque = torque_setpoint_src_.present();
     if (!maybe_torque.has_value()) {
@@ -591,6 +592,7 @@ void Motor::update(uint32_t timestamp) {
     } else {
         Vdq_setpoint_ = {vd, vq};
     }
+#endif    
 }
 
 
@@ -670,14 +672,29 @@ void Motor::dc_calib_cb(uint32_t timestamp, std::optional<Iph_ABC_t> current) {
 
     if (current.has_value()) {
         const float calib_filter_k = std::min(dc_calib_period / config_.dc_calib_tau, 1.0f);
-        DC_calib_.phA += (current->phA - DC_calib_.phA) * calib_filter_k;
-        DC_calib_.phB += (current->phB - DC_calib_.phB) * calib_filter_k;
-        DC_calib_.phC += (current->phC - DC_calib_.phC) * calib_filter_k;
+
+        float errA = current->phA - DC_calib_.phA;
+        float errB = current->phB - DC_calib_.phB;
+        float errC = current->phC - DC_calib_.phC;
+
+        DC_calib_.phA += errA * calib_filter_k;
+        DC_calib_.phB += errB * calib_filter_k;
+        DC_calib_.phC += errC * calib_filter_k;
+
+        calib_variance.phA += (errA * errA - calib_variance.phA) * calib_filter_k;
+        calib_variance.phB += (errB * errB - calib_variance.phB) * calib_filter_k;
+        calib_variance.phC += (errC * errC - calib_variance.phC) * calib_filter_k;
+        
         dc_calib_running_since_ += dc_calib_period;
     } else {
         DC_calib_.phA = 0.0f;
         DC_calib_.phB = 0.0f;
         DC_calib_.phC = 0.0f;
+
+        calib_variance.phA = 0.0f;
+        calib_variance.phB = 0.0f;
+        calib_variance.phC = 0.0f;
+
         dc_calib_running_since_ = 0.0f;
     }
 }
