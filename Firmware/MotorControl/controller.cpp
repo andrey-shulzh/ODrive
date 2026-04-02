@@ -144,9 +144,11 @@ bool Controller::update() {
     std::optional<float> inp_phase = phase_src_.present();
     std::optional<float> inp_phase_vel = phase_vel_src_.present();
 
+    const float curr_enc_pos = float(axis_->encoder_.shadow_count_) + 0.5f; // for now just simple center-aligned position
+
     float Iq_set = 0.0f;
     float Id_set = 0.0f;
-
+#if 0
     const float I_break = 3.0f;
     const float I_limit = 21.0f;
 
@@ -154,11 +156,9 @@ bool Controller::update() {
     constexpr float rad_15 = 15 * (M_PI / 180.0f);
 
     const float center_enc_pos = axis_->calibrator_.center_enc_pos_;
-    const float curr_enc_pos = float(axis_->encoder_.shadow_count_) + 0.5f; // for now just simple center-aligned position
-
+    const float enc_from_center = curr_enc_pos - center_enc_pos;
     const float enc_15_delta = rad_15 * axis_->calibrator_.phase2enc_;
 
-    const float enc_from_center = curr_enc_pos - center_enc_pos;
     if (std::abs(enc_from_center) < enc_15_delta) {
         // breakout zone
         const float s = std::abs(enc_from_center) / enc_15_delta;
@@ -187,7 +187,10 @@ bool Controller::update() {
         phase_ = *inp_phase;
         phase_vel_ = *inp_phase_vel;
     }
-
+#else
+    phase_ = *inp_phase;
+    phase_vel_ = *inp_phase_vel;
+#endif
     if (config_.anticogging.anticogging_enabled) {
         // anti-cogging
         Iq_set += axis_->calibrator_.sample_I_cog_map(curr_enc_pos);

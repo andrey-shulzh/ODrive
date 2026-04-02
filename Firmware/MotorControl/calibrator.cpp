@@ -5,85 +5,60 @@
 #include <float.h>
 
 #define DEBUG_LOG 1
+#define DEBUG_CURRENT 0
 
 
 BaseUpdateHandler Calibrator::empty_update_handler_;
 
 
 constexpr uint32_t MAX_CCMRAM = (65536 - configTOTAL_HEAP_SIZE);
-#if RECORD_SAMPLES
+//#if RECORD_SAMPLES
 struct RecSample { float Id, Iq; };
-constexpr uint32_t MAX_SAMPLES = I_COG_MAP_MAX_SAMPLES;
+constexpr uint32_t MAX_SAMPLES = MAX_CCMRAM / (2 * sizeof(RecSample));
 static_assert(MAX_SAMPLES * 2 * sizeof(RecSample) <= MAX_CCMRAM);
 __attribute__((section(".ccmram")))
 static RecSample rec_samples_1[MAX_SAMPLES];
 static RecSample rec_samples_2[MAX_SAMPLES];
-#endif
+//#endif
 
-#if RECORD_BAD_ENC
-struct BadEncData { uint32_t time_delta; int16_t count; };
-constexpr uint32_t MAX_BAD_ENC_DATA = MAX_CCMRAM / sizeof(BadEncData);
-__attribute__((section(".ccmram")))
-static BadEncData bad_enc_data[MAX_BAD_ENC_DATA];
-#endif
-
-#if RECORD_RAW_ENC
-struct EncData { uint32_t time; int16_t count; };
-constexpr uint32_t MAX_ENC_DATA = MAX_CCMRAM / sizeof(EncData);
-__attribute__((section(".ccmram")))
-static EncData enc_data[MAX_ENC_DATA];
-#endif
-
-#if RECORD_I || RECORD_I_ENC
-struct I_Data { float Id, Iq; };
-constexpr uint32_t MAX_I_DATA = 0;//MAX_CCMRAM / sizeof(I_Data);
-__attribute__((section(".ccmram")))
-static I_Data I_data[MAX_I_DATA];
-#endif
 
 Calibrator::Calibrator()
 {
 }
 
-
 bool Calibrator::update(uint32_t timestamp)
 {
+    BaseUpdateHandler::ProcessArgs args;
+    args.timestamp = timestamp;
+
     const uint32_t prim = cpu_enter_critical();
 #if ENC_TIME_FROM_TIMER
     extern volatile uint32_t _enc_last_time[2];
     extern volatile int16_t _enc_last_count[2];
     const int axis_num = axis_->axis_num_;
-    const uint32_t enc_time = _enc_last_time[axis_num];
-    const int32_t enc_count = _enc_last_count[axis_num];
+    args.enc_time = _enc_last_time[axis_num];
+    args.enc_count = _enc_last_count[axis_num];
 #endif
 #if ENC_TIME_FROM_GPIO
     const auto& encoder = axis_->encoder_;
-    const uint32_t enc_time = encoder.last_enc_time_;
-    const int32_t enc_count = encoder.last_enc_count_;
+    args.enc_time = encoder.last_enc_time_;
+    args.enc_count = encoder.last_enc_count_;
 #endif
     cpu_exit_critical(prim);
 
-    last_enc_time_ = enc_time;
-    last_enc_count_ = enc_count;
+    last_enc_time_ = args.enc_time;
+    last_enc_count_ = args.enc_count;
 
-    auto [Ialpha, Ibeta] = axis_->motor_.current_control_.Ialpha_beta_measured_.value_or(float2D{0.0f, 0.0f});
+    std::tie(args.Ialpha, args.Ibeta) = axis_->motor_.current_control_.Ialpha_beta_measured_.value_or(float2D{0.0f, 0.0f});
+    
+    args.phase = *axis_->open_loop_controller_.total_distance_.any();
+    args.Iph_raw = axis_->motor_.last_raw_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
+    args.Iph_ofs = axis_->motor_.last_ofs_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
 
-#if 0
-    if (record_enabled_) {
-        if (enc_pos != last_enc_pos_ && record_idx_ < MAX_ENC_DATA) {
-            enc_data[record_idx_++] = EncData{enc_time, enc_pos};
-        }
-    }
-    last_enc_time_ = enc_time;
-    last_enc_pos_ = enc_pos;
-#endif
-#if RECORD_I
-    if (record_I_enabled_ && record_I_idx_ < MAX_I_DATA) {
-        I_data[record_I_idx_++] = I_Data{ Id, Iq };
-    }
-#endif
-    const float phase = *axis_->open_loop_controller_.total_distance_.any();
-    if (!update_handler_->process(enc_time, phase, enc_count, Ialpha, Ibeta)) {
+    //args.Iph_meas = axis_->motor_.current_meas_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
+    //args.Iph_calib = axis_->motor_.DC_calib_;
+
+    if (!update_handler_->process(args)) {
         // stop motor phase
         axis_->open_loop_controller_.target_vel_ = 0.0f;
     }
@@ -104,10 +79,10 @@ public:
         accum_count_ = 0;
     }
 
-    virtual bool process(uint32_t timestamp, float phase, int32_t enc_count, float Ialpha, float Ibeta) override
+    virtual bool process(const ProcessArgs& args) override
     {
-        Ialpha_accum_ += Ialpha;
-        Ibeta_accum_ += Ibeta;
+        Ialpha_accum_ += args.Ialpha;
+        Ibeta_accum_ += args.Ibeta;
         ++accum_count_;
         return true;
     }
@@ -148,15 +123,15 @@ public:
         is_detected_ = false;
     }
 
-    virtual bool process(uint32_t timestamp, float phase, int32_t enc_count, float Ialpha, float Ibeta) override
+    virtual bool process(const ProcessArgs& args) override
     {
         if (is_detected_) {
             return false;
         }
-        if (enc_count * enc_step_dir_ > detect_enc_count_) {
+        if (args.enc_count * enc_step_dir_ > detect_enc_count_) {
             is_detected_ = true;
-            detected_enc_count_ = enc_count;
-            detected_phase_ = phase;
+            detected_enc_count_ = args.enc_count;
+            detected_phase_ = args.phase;
             return false;
         }
         return true;
@@ -328,8 +303,8 @@ public:
         sub_sample_idx_ = 0;
         sample_idx_ = start_state.start_sample_idx_;
 
-        enc_Ialpha_accum_ = 0.0f;
-        enc_Ibeta_accum_ = 0.0f;
+        enc_I_phB_accum_ = 0.0f;
+        enc_I_phC_accum_ = 0.0f;
         enc_accum_count_ = 0;
 
         vel_filter_.restart(enc_motor_step_ * start_state.enc_step_dir_);
@@ -344,17 +319,22 @@ public:
         limit_impl_.onRestart(start_state, curr_enc_count, curr_enc_time);
     }
 
-    virtual bool process(uint32_t enc_time, float phase, int32_t enc_count, float Ialpha, float Ibeta) override
+#if DEBUG_CURRENT
+    int32_t record_idx_ = 0;
+    bool record_enabled_ = false;
+#endif
+
+    virtual bool process(const ProcessArgs& args) override
     {
-        if (!limit_impl_.onProcess(enc_time, phase, enc_count, enc_motor_step_, start_state_.enc_step_dir_)) {
+        if (!limit_impl_.onProcess(args.phase, args.enc_count, args.enc_time, enc_motor_step_, start_state_.enc_step_dir_)) {
             return false;
         }
 
-        const int32_t enc_edge_pos = enc_count + start_state_.enc_edge_ofs_;
+        const int32_t enc_edge_pos = args.enc_count + start_state_.enc_edge_ofs_;
         {
-            // accum Ialpha & Ibeta
-            enc_Ialpha_accum_ += Ialpha;
-            enc_Ibeta_accum_ += Ibeta;
+            // accum I
+            enc_I_phB_accum_ += (args.Iph_raw.phB - args.Iph_ofs.phB);
+            enc_I_phC_accum_ += (args.Iph_raw.phC - args.Iph_ofs.phC);
             ++enc_accum_count_;
         }
 
@@ -364,18 +344,29 @@ public:
             return true;
         }
 
-        const uint32_t delta_time = enc_time - last_enc_time_;
+        const uint32_t delta_time = args.enc_time - last_enc_time_;
         // pre-filter encoder bad timing
         if (delta_time < enc_min_delta_time_ * abs_delta_count) {
             return true;
         }
 
         {
-            const float avg_Ialpha = enc_Ialpha_accum_ / float(enc_accum_count_);
-            const float avg_Ibeta = enc_Ibeta_accum_ / float(enc_accum_count_);
-            enc_Ialpha_accum_ = 0.0f;
-            enc_Ibeta_accum_ = 0.0f;
+            const float avg_I_phB = enc_I_phB_accum_ / float(enc_accum_count_);
+            const float avg_I_phC = enc_I_phC_accum_ / float(enc_accum_count_);
+
+            enc_I_phB_accum_ = 0.0f;
+            enc_I_phC_accum_ = 0.0f;
             enc_accum_count_ = 0;
+
+            const float avg_Ialpha = -(avg_I_phB + avg_I_phC);
+            const float avg_Ibeta = one_by_sqrt3 * (avg_I_phB - avg_I_phC);
+#if DEBUG_CURRENT
+            if (record_enabled_ && record_idx_ < MAX_SAMPLES) {
+                rec_samples_1[record_idx_] = RecSample{avg_I_raw_phB - avg_I_bias_phB, avg_I_raw_phC - avg_I_bias_phC};
+                rec_samples_2[record_idx_] = RecSample{avg_I_meas_phB, avg_I_meas_phC};
+                ++record_idx_;
+            }
+#endif
 
             // init_enc_pos = init_enc_count + 0.5, thus -1 in this formula!
             const float avg_enc_pos = ((enc_edge_pos - init_enc_count_) + (last_enc_edge_pos_ - init_enc_count_) - 1) * 0.5f;
@@ -441,7 +432,7 @@ public:
             }
         }
         last_enc_edge_pos_ = enc_edge_pos;
-        last_enc_time_ = enc_time;
+        last_enc_time_ = args.enc_time;
         return true;
     }
 
@@ -469,8 +460,8 @@ private:
     uint32_t sub_sample_idx_;
     int32_t sample_idx_;
 
-    float enc_Ialpha_accum_;
-    float enc_Ibeta_accum_;
+    float enc_I_phB_accum_;
+    float enc_I_phC_accum_;
     uint32_t enc_accum_count_;
 
     Velocity_Filter_t vel_filter_;
@@ -528,7 +519,7 @@ public:
         is_found_ = false;
     }
 
-    bool onProcess(uint32_t enc_time, float phase, int32_t enc_count, float enc_motor_step, int32_t enc_step_dir)
+    bool onProcess(float phase, int32_t enc_count, uint32_t enc_time, float enc_motor_step, int32_t enc_step_dir)
     {
         if (is_found_) {
             return false;
@@ -603,7 +594,7 @@ public:
         stop_enc_count_ = std::max(lo_enc_count_ * start_state.enc_step_dir_, hi_enc_count_ * start_state.enc_step_dir_);
     }
 
-    bool onProcess(uint32_t enc_time, float phase, int32_t enc_count, float enc_motor_step, int32_t enc_step_dir)
+    bool onProcess(float phase, int32_t enc_count, uint32_t enc_time, float enc_motor_step, int32_t enc_step_dir)
     {
         is_stopped_ |= (enc_count * enc_step_dir >= stop_enc_count_);
         return !is_stopped_;
@@ -713,28 +704,6 @@ bool Calibrator::run_offset_calibration()
     if (axis_ == nullptr) {
         return false;
     }
-#if 0
-    printf("idx,time,count\n");
-    osDelay(10);
-
-    CRITICAL_SECTION() {
-        record_enabled_ = true;
-        record_idx_ = 0;
-    }
-    int out_idx = 0;
-    while (axis_->requested_state_ == Axis::AXIS_STATE_UNDEFINED) {
-        const int ready_idx = record_idx_;
-        for (; out_idx < ready_idx; ++out_idx) {
-            const auto& ed = enc_data[out_idx];
-            printf("%u, %u, %d\n", out_idx, ed.time, ed.count);
-            osDelay(10);
-        }
-        osDelay(20);
-    }
-    record_enabled_ = false;
-    return false;
-#endif
-
 
 #if RECORD_SAMPLES
     memset(rec_samples_1, 0, sizeof(RecSample) * MAX_SAMPLES);
@@ -955,6 +924,10 @@ bool Calibrator::run_offset_calibration()
     osDelay(5);
 #endif
 
+#if DEBUG_CURRENT
+    detect_limit_with_record_handler.record_idx_ = 0;
+    detect_limit_with_record_handler.record_enabled_ = true;
+#endif
     // 1b. settle and go in direction for encoder increasing to detect hi-limit and record samples
     if (!run_record_pass(detect_limit_with_record_handler, lo_start_state, lo_start_phase, rec_samples_1, max_range_timeout)) {
         return false;
@@ -964,6 +937,34 @@ bool Calibrator::run_offset_calibration()
 #if DEBUG_LOG    
     printf("hi_lim=%d %f\n", hi_enc_count, *axis_->open_loop_controller_.total_distance_.any());
     osDelay(5);
+#endif
+
+#if DEBUG_CURRENT
+    // finish!!!
+    axis_->motor_.disarm();
+
+    printf("~~~ rec_samples_1 ~~~\n");
+    osDelay(5);
+    printf("idx,Ib,Ic\n");
+    osDelay(5);
+    for (uint32_t idx = 0; idx < detect_limit_with_record_handler.record_idx_; ++idx)
+    {
+        const auto& s = rec_samples_1[idx];
+        printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+        osDelay(5);
+    }
+    printf("~~~ rec_samples_2 ~~~\n");
+    osDelay(5);
+    printf("idx,Ib,Ic\n");
+    osDelay(5);
+    for (uint32_t idx = 0; idx < detect_limit_with_record_handler.record_idx_; ++idx)
+    {
+        const auto& s = rec_samples_2[idx];
+        printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+        osDelay(5);
+    }
+    osDelay(100);
+    return false;
 #endif
 
     stop_at_limit_with_record_handler.getLimitImpl().init(lo_enc_count + config_.stop_limit_enc_ofs, hi_enc_count - config_.stop_limit_enc_ofs);
@@ -1041,7 +1042,7 @@ bool Calibrator::run_offset_calibration()
     axis_->motor_.disarm();
     osDelay(100);
 
-#if RECORD_SAMPLES && 0
+#if RECORD_SAMPLES
     printf("~~~samples_I1~~~\n");
     osDelay(5);
     printf("idx,Id,Iq\n");
@@ -1128,7 +1129,7 @@ float Calibrator::build_maps(const SamplingStartState& lo_start_state, const Sam
     // num_periods = floor(len_in_samples / period_in_samples)
     const uint32_t num_periods = (len_in_samples * period_denom) / period_numer;
 
-    // ofs_sample_idx = sample_idx_0 + (len_in_samples - num_periods * period) / 2
+    // sample_idx_ofs = sample_idx_0 + (len_in_samples - num_periods * period) / 2
     const uint32_t sample_idx_ofs = lo_start_state.start_sample_idx_ +
         (len_in_samples * period_denom - num_periods * period_numer) / (2 * period_denom);
 
@@ -1187,21 +1188,26 @@ float Calibrator::build_maps(const SamplingStartState& lo_start_state, const Sam
         tmp_Id_hd_map[i] = Id_hd;
     });
 
-    // build cogging map
+    static constexpr uint32_t Id_HD_MAP_IDX_MASK = Id_HD_MAP_NUM_SAMPLES - 1;
+    // filter Id_hd_map with idx wrap
+    filter_savgol7(Id_HD_MAP_NUM_SAMPLES, tmp_Id_hd_map, Id_hd_map_, [](int32_t, int32_t idx) { return idx & Id_HD_MAP_IDX_MASK; });
+
+    // build cogging map (using already filtered Id_hd_map_)
     const float inv_period_numer = 1.0f / period_numer;
-    for (uint32_t idx = lo_start_state.start_sample_idx_; idx <= hi_start_state.start_sample_idx_; ++idx) {
+    for (int32_t idx = lo_start_state.start_sample_idx_; idx <= hi_start_state.start_sample_idx_; ++idx) {
         const RecSample& s_I1 = samples_I1[idx];
         const float real_Iq = s_I1.Iq + delta_phase * s_I1.Id;
         const float real_Id = s_I1.Id - delta_phase * s_I1.Iq;
 
         // period_pos = (idx - sample_idx_ofs) * Id_HD_MAP_NUM_SAMPLES / period + Id_HD_MAP_NUM_SAMPLES
-        // add Id_HD_MAP_NUM_SAMPLES to avoid negative p_pos!
-        const uint32_t period_pos_numer = (idx - sample_idx_ofs) * pos_denom + Id_HD_MAP_NUM_SAMPLES * period_numer;
+        // (idx - sample_idx_ofs) can be negative so add Id_HD_MAP_NUM_SAMPLES to avoid negative period_pos_idx!
+        // pos_denom = period_denom * Id_HD_MAP_NUM_SAMPLES
+        const uint32_t period_pos_numer = (idx - int32_t(sample_idx_ofs)) * int32_t(pos_denom) + int32_t(Id_HD_MAP_NUM_SAMPLES * period_numer);
         const uint32_t period_pos_idx = period_pos_numer / period_numer;
         const float period_pos_frac = float(period_pos_numer - period_pos_idx * period_numer) * inv_period_numer;
         // lerp
-        const float Id_hd_0 = Id_hd_map_[period_pos_idx & (Id_HD_MAP_NUM_SAMPLES - 1)];
-        const float Id_hd_1 = Id_hd_map_[(period_pos_idx + 1) & (Id_HD_MAP_NUM_SAMPLES - 1)];
+        const float Id_hd_0 = Id_hd_map_[period_pos_idx & Id_HD_MAP_IDX_MASK];
+        const float Id_hd_1 = Id_hd_map_[(period_pos_idx + 1) & Id_HD_MAP_IDX_MASK];
         const float Id_hd = Id_hd_0 + (Id_hd_1 - Id_hd_0) * period_pos_frac;
 
         const float I_cog = real_Iq + real_Id * Id_hd;
@@ -1209,24 +1215,18 @@ float Calibrator::build_maps(const SamplingStartState& lo_start_state, const Sam
     }
 
     I_cog_map_size_ = len_in_samples + 1;
-    I_cog_map_enc_beg_ = lo_start_state.start_enc_edge_pos_ + 0.5f * config_.sample_size;
-    I_cog_map_enc_end_ = hi_start_state.start_enc_edge_pos_ - 0.5f * config_.sample_size;
-
-    Id_hd_map_enc_start_ = lo_start_state.start_enc_edge_pos_ +
-        (sample_idx_ofs - lo_start_state.start_sample_idx_ + 0.5f) * config_.sample_size;
-
-    Id_hd_map_enc_period_ = float(enc_cpr) / pole_pairs;
-
-    // filter maps
-    static constexpr int32_t Id_HD_MAP_IDX_MASK = Id_HD_MAP_NUM_SAMPLES - 1;
-    // filter with idx wrap
-    filter_savgol7(Id_HD_MAP_NUM_SAMPLES, tmp_Id_hd_map, Id_hd_map_, [](int32_t, int32_t idx) { return idx & Id_HD_MAP_IDX_MASK; });
-    // filter with idx mirror
+    // filter I_cog_map with idx mirror
     filter_savgol7(I_cog_map_size_, tmp_I_cog_map, I_cog_map_, [](int32_t size, int32_t idx) {
         if (idx < 0) return -idx;
         if (idx >= size) return ((size - 1) << 1) - idx;
         return idx;
     });
+
+    I_cog_map_enc_beg_ = lo_start_state.start_enc_edge_pos_ + 0.5f * config_.sample_size;
+    I_cog_map_enc_end_ = hi_start_state.start_enc_edge_pos_ - 0.5f * config_.sample_size;
+
+    Id_hd_map_enc_start_ = lo_start_state.start_enc_edge_pos_ + (sample_idx_ofs - lo_start_state.start_sample_idx_ + 0.5f) * config_.sample_size;
+    Id_hd_map_enc_period_ = float(enc_cpr) / pole_pairs;
 
 #if DEBUG_LOG
     printf("build_maps: d_phs=%f, %f, %f\n", delta_phase, Id_hd_map_enc_start_, Id_hd_map_enc_period_);

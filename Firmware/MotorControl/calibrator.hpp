@@ -4,6 +4,7 @@
 #include "utils.hpp"
 
 #define RECORD_SAMPLES 1
+
 constexpr uint32_t I_COG_MAP_MAX_SAMPLES = 1408;
 constexpr uint32_t Id_HD_MAP_NUM_SAMPLES = 256; // should be 2^n
 
@@ -16,7 +17,22 @@ public:
     BaseUpdateHandler() = default;
     virtual ~BaseUpdateHandler() = default;
 
-    virtual bool process(uint32_t timestamp, float phase, int32_t enc_count, float Ialpha, float Ibeta) { return true; }
+    struct ProcessArgs
+    {
+        uint32_t timestamp;
+        float phase;
+        int32_t enc_count;
+        uint32_t enc_time;
+
+        float Ialpha, Ibeta;
+
+        Iph_ABC_t Iph_raw;
+        Iph_ABC_t Iph_ofs;
+        //Iph_ABC_t Iph_meas;
+        //Iph_ABC_t Iph_calib;
+    };
+
+    virtual bool process(const ProcessArgs& args) { return true; }
 };
 
 struct RecSample;

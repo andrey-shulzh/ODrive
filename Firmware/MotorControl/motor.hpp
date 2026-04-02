@@ -136,6 +136,9 @@ public:
 
     // debug
     Iph_ABC_t calib_variance = {0.0f, 0.0f, 0.0f};
+
+    std::optional<Iph_ABC_t> last_raw_current_;
+    std::optional<Iph_ABC_t> last_ofs_current_;
 };
 
 
