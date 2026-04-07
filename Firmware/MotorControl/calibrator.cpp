@@ -6,30 +6,47 @@
 
 #define DEBUG_LOG 1
 #define DEBUG_CURRENT 0
+#define DEBUG_DETECT_LIMIT 0
 
 
 BaseUpdateHandler Calibrator::empty_update_handler_;
 
 
 constexpr uint32_t MAX_CCMRAM = (65536 - configTOTAL_HEAP_SIZE);
-//#if RECORD_SAMPLES
 struct RecSample { float Id, Iq; };
+#if RECORD_SAMPLES
 constexpr uint32_t MAX_SAMPLES = MAX_CCMRAM / (2 * sizeof(RecSample));
 static_assert(MAX_SAMPLES * 2 * sizeof(RecSample) <= MAX_CCMRAM);
+#else
+constexpr uint32_t MAX_SAMPLES = 0;
+#endif
 __attribute__((section(".ccmram")))
 static RecSample rec_samples_1[MAX_SAMPLES];
 static RecSample rec_samples_2[MAX_SAMPLES];
-//#endif
+
+#if DEBUG_DETECT_LIMIT
+struct RecDetectLimit
+{
+    uint32_t enc_dt;
+    //int32_t enc_count;
+    //float Iangle;
+    //float phase;
+};
+constexpr uint32_t MAX_ENC_TIME_IDX = MAX_CCMRAM / sizeof(RecDetectLimit);
+__attribute__((section(".ccmram")))
+
+static RecDetectLimit rec_detect_limit[MAX_ENC_TIME_IDX];
+#endif
 
 
 Calibrator::Calibrator()
 {
 }
 
-bool Calibrator::update(uint32_t timestamp)
+bool Calibrator::update(uint32_t current_meas_timestamp)
 {
     BaseUpdateHandler::ProcessArgs args;
-    args.timestamp = timestamp;
+    args.current_meas_timestamp = current_meas_timestamp;
 
     const uint32_t prim = cpu_enter_critical();
 #if ENC_TIME_FROM_TIMER
@@ -52,11 +69,12 @@ bool Calibrator::update(uint32_t timestamp)
     std::tie(args.Ialpha, args.Ibeta) = axis_->motor_.current_control_.Ialpha_beta_measured_.value_or(float2D{0.0f, 0.0f});
     
     args.phase = *axis_->open_loop_controller_.total_distance_.any();
-    args.Iph_raw = axis_->motor_.last_raw_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
-    args.Iph_ofs = axis_->motor_.last_ofs_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
 
-    //args.Iph_meas = axis_->motor_.current_meas_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
-    //args.Iph_calib = axis_->motor_.DC_calib_;
+    args.Iph_raw = axis_->motor_.last_raw_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
+
+    const Iph_ABC_t Iph_ofs1 = axis_->motor_.prev_ofs_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
+    const Iph_ABC_t Iph_ofs2 = axis_->motor_.last_ofs_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
+    args.Iph_ofs = Iph_ABC_t{(Iph_ofs1.phA + Iph_ofs2.phA)*0.5f, (Iph_ofs1.phB + Iph_ofs2.phB)*0.5f, (Iph_ofs1.phC + Iph_ofs2.phC)*0.5f};
 
     if (!update_handler_->process(args)) {
         // stop motor phase
@@ -326,113 +344,113 @@ public:
 
     virtual bool process(const ProcessArgs& args) override
     {
-        if (!limit_impl_.onProcess(args.phase, args.enc_count, args.enc_time, enc_motor_step_, start_state_.enc_step_dir_)) {
+        if (!limit_impl_.onProcess(args, enc_motor_step_, start_state_.enc_step_dir_)) {
             return false;
         }
 
-        const int32_t enc_edge_pos = args.enc_count + start_state_.enc_edge_ofs_;
-        {
-            // accum I
+        auto do_enc_accum = [this](const ProcessArgs& args) {
             enc_I_phB_accum_ += (args.Iph_raw.phB - args.Iph_ofs.phB);
             enc_I_phC_accum_ += (args.Iph_raw.phC - args.Iph_ofs.phC);
             ++enc_accum_count_;
+        };
+
+        const bool do_enc_accum_before = (args.enc_time > args.current_meas_timestamp);
+        if (do_enc_accum_before) {
+            do_enc_accum(args);
         }
 
+        const int32_t enc_edge_pos = args.enc_count + start_state_.enc_edge_ofs_;
         const int32_t abs_delta_count = (enc_edge_pos - last_enc_edge_pos_) * start_state_.enc_step_dir_;
         // pre-filter encoder jitter
-        if (abs_delta_count <= 0) {
-            return true;
-        }
+        if (abs_delta_count > 0) {
+            const uint32_t delta_time = args.enc_time - last_enc_time_;
+            // pre-filter encoder bad timing
+            if (delta_time >= enc_min_delta_time_ * abs_delta_count) {
+                const float avg_I_phB = enc_I_phB_accum_ / float(enc_accum_count_);
+                const float avg_I_phC = enc_I_phC_accum_ / float(enc_accum_count_);
 
-        const uint32_t delta_time = args.enc_time - last_enc_time_;
-        // pre-filter encoder bad timing
-        if (delta_time < enc_min_delta_time_ * abs_delta_count) {
-            return true;
-        }
+                enc_I_phB_accum_ = 0.0f;
+                enc_I_phC_accum_ = 0.0f;
+                enc_accum_count_ = 0;
 
-        {
-            const float avg_I_phB = enc_I_phB_accum_ / float(enc_accum_count_);
-            const float avg_I_phC = enc_I_phC_accum_ / float(enc_accum_count_);
-
-            enc_I_phB_accum_ = 0.0f;
-            enc_I_phC_accum_ = 0.0f;
-            enc_accum_count_ = 0;
-
-            const float avg_Ialpha = -(avg_I_phB + avg_I_phC);
-            const float avg_Ibeta = one_by_sqrt3 * (avg_I_phB - avg_I_phC);
+                const float avg_Ialpha = -(avg_I_phB + avg_I_phC);
+                const float avg_Ibeta = one_by_sqrt3 * (avg_I_phB - avg_I_phC);
 #if DEBUG_CURRENT
-            if (record_enabled_ && record_idx_ < MAX_SAMPLES) {
-                rec_samples_1[record_idx_] = RecSample{avg_I_raw_phB - avg_I_bias_phB, avg_I_raw_phC - avg_I_bias_phC};
-                rec_samples_2[record_idx_] = RecSample{avg_I_meas_phB, avg_I_meas_phC};
-                ++record_idx_;
-            }
+                if (record_enabled_ && record_idx_ < MAX_SAMPLES) {
+                    rec_samples_1[record_idx_] = RecSample{avg_I_raw_phB - avg_I_bias_phB, avg_I_raw_phC - avg_I_bias_phC};
+                    rec_samples_2[record_idx_] = RecSample{avg_I_meas_phB, avg_I_meas_phC};
+                    ++record_idx_;
+                }
 #endif
 
-            // init_enc_pos = init_enc_count + 0.5, thus -1 in this formula!
-            const float avg_enc_pos = ((enc_edge_pos - init_enc_count_) + (last_enc_edge_pos_ - init_enc_count_) - 1) * 0.5f;
-            const float avg_enc_phase = avg_enc_pos * phase_dir_ * enc_phase_step_;
+                // init_enc_pos = init_enc_count + 0.5, thus -1 in this formula!
+                const float avg_enc_pos = ((enc_edge_pos - init_enc_count_) + (last_enc_edge_pos_ - init_enc_count_) - 1) * 0.5f;
+                const float avg_enc_phase = avg_enc_pos * phase_dir_ * enc_phase_step_;
 
-            const float cos_phase = cosf(avg_enc_phase);//our_arm_cos_f32(avg_enc_phase);
-            const float sin_phase = sinf(avg_enc_phase);//our_arm_sin_f32(avg_enc_phase);
-            const float step_Iq = cos_phase * avg_Ibeta - sin_phase * avg_Ialpha;
-            const float step_Id = sin_phase * avg_Ibeta + cos_phase * avg_Ialpha;
+                const float cos_phase = cosf(avg_enc_phase);//our_arm_cos_f32(avg_enc_phase);
+                const float sin_phase = sinf(avg_enc_phase);//our_arm_sin_f32(avg_enc_phase);
+                const float step_Iq = cos_phase * avg_Ibeta - sin_phase * avg_Ialpha;
+                const float step_Id = sin_phase * avg_Ibeta + cos_phase * avg_Ialpha;
 
-            // after pre-filters abs_delta_count could be > 1 !!!
-            const float step_dt = float(delta_time) / float(abs_delta_count * TIM_1_8_CLOCK_HZ);
-            for (int32_t i = 0; i < abs_delta_count; ++i) {
-                if (enc_edge_pos * start_state_.enc_step_dir_ + i < start_state_.filter_start_enc_edge_pos_) {
-                    continue;
+                // after pre-filters abs_delta_count could be > 1 !!!
+                const float step_dt = float(delta_time) / float(abs_delta_count * TIM_1_8_CLOCK_HZ);
+                for (int32_t i = 0; i < abs_delta_count; ++i) {
+                    if (enc_edge_pos * start_state_.enc_step_dir_ + i < start_state_.filter_start_enc_edge_pos_) {
+                        continue;
+                    }
+
+                    vel_filter_.add(step_dt);
+                    Iq_filter_.add(step_Iq);
+                    Id_filter_.add(step_Id);
+                    ++filter_add_count_;
+                    if (filter_add_count_ < Velocity_Filter_t::Len) {
+                        continue;
+                    }
+                    const float smooth_edge_vel = vel_filter_.eval();
+
+                    if (filter_add_count_ == Velocity_Filter_t::Len) {
+                        first_smooth_edge_vel_ = last_smooth_edge_vel_ = smooth_edge_vel;
+                        continue;
+                    }
+                    // filter_add_count_ should be >= TorqueI_Filter_t::Len
+
+                    // velocity is measured at enc change edge - so 1-order function integral
+                    smooth_vel_accum_ += 0.5f * (last_smooth_edge_vel_ + smooth_edge_vel);
+                    // I is measured between enc changes - so 0-order function integral
+                    smooth_Iq_accum_ += Iq_filter_.eval();
+                    smooth_Id_accum_ += Id_filter_.eval();
+
+                    last_smooth_edge_vel_ = smooth_edge_vel;
+
+                    ++sub_sample_idx_;
+                    if (sub_sample_idx_ == sample_size_) {
+                        sub_sample_idx_ = 0;
+
+                        const float v_dif = last_smooth_edge_vel_ - first_smooth_edge_vel_;
+                        const float v_sum = last_smooth_edge_vel_ + first_smooth_edge_vel_;
+                        const float sample_acc = std::abs(v_sum) * v_dif * motor_acc_scale_;
+                        first_smooth_edge_vel_ = last_smooth_edge_vel_;
+
+                        const float sample_vel = smooth_vel_accum_ / float(sample_size_);
+                        const float sample_Iq = smooth_Iq_accum_ / float(sample_size_);
+                        const float sample_Id = smooth_Id_accum_ / float(sample_size_);
+                        // reset accum
+                        smooth_vel_accum_ = 0.0f;
+                        smooth_Iq_accum_ = 0.0f;
+                        smooth_Id_accum_ = 0.0f;
+
+                        record_impl_.onSample(sample_idx_, sample_Id, sample_Iq, sample_vel, sample_acc);
+
+                        sample_idx_ += start_state_.enc_step_dir_;
+                    }
                 }
-
-                vel_filter_.add(step_dt);
-                Iq_filter_.add(step_Iq);
-                Id_filter_.add(step_Id);
-                ++filter_add_count_;
-                if (filter_add_count_ < Velocity_Filter_t::Len) {
-                    continue;
-                }
-                const float smooth_edge_vel = vel_filter_.eval();
-
-                if (filter_add_count_ == Velocity_Filter_t::Len) {
-                    first_smooth_edge_vel_ = last_smooth_edge_vel_ = smooth_edge_vel;
-                    continue;
-                }
-                // filter_add_count_ should be >= TorqueI_Filter_t::Len
-
-                // velocity is measured at enc change edge - so 1-order function integral
-                smooth_vel_accum_ += 0.5f * (last_smooth_edge_vel_ + smooth_edge_vel);
-                // I is measured between enc changes - so 0-order function integral
-                smooth_Iq_accum_ += Iq_filter_.eval();
-                smooth_Id_accum_ += Id_filter_.eval();
-
-                last_smooth_edge_vel_ = smooth_edge_vel;
-
-                ++sub_sample_idx_;
-                if (sub_sample_idx_ == sample_size_) {
-                    sub_sample_idx_ = 0;
-
-                    const float v_dif = last_smooth_edge_vel_ - first_smooth_edge_vel_;
-                    const float v_sum = last_smooth_edge_vel_ + first_smooth_edge_vel_;
-                    const float sample_acc = std::abs(v_sum) * v_dif * motor_acc_scale_;
-                    first_smooth_edge_vel_ = last_smooth_edge_vel_;
-
-                    const float sample_vel = smooth_vel_accum_ / float(sample_size_);
-                    const float sample_Iq = smooth_Iq_accum_ / float(sample_size_);
-                    const float sample_Id = smooth_Id_accum_ / float(sample_size_);
-                    // reset accum
-                    smooth_vel_accum_ = 0.0f;
-                    smooth_Iq_accum_ = 0.0f;
-                    smooth_Id_accum_ = 0.0f;
-
-                    limit_impl_.onSample(sample_idx_, sample_Id, sample_Iq, sample_vel, sample_acc);
-                    record_impl_.onSample(sample_idx_, sample_Id, sample_Iq, sample_vel, sample_acc);
-
-                    sample_idx_ += start_state_.enc_step_dir_;
-                }
+                last_enc_edge_pos_ = enc_edge_pos;
+                last_enc_time_ = args.enc_time;
             }
         }
-        last_enc_edge_pos_ = enc_edge_pos;
-        last_enc_time_ = args.enc_time;
+        if (!do_enc_accum_before) {
+            do_enc_accum(args);
+        }
         return true;
     }
 
@@ -511,7 +529,6 @@ public:
     void onRestart(const SamplingStartState& start_state, int32_t curr_enc_count, uint32_t curr_enc_time)
     {
         count_ = 0;
-        vel_fast_mean_ = vel_slow_mean_ = 0.001f;
 
         limit_enc_count_ = curr_enc_count;
         limit_enc_time_ = curr_enc_time;
@@ -519,42 +536,68 @@ public:
         is_found_ = false;
     }
 
-    bool onProcess(float phase, int32_t enc_count, uint32_t enc_time, float enc_motor_step, int32_t enc_step_dir)
+#if DEBUG_DETECT_LIMIT
+    uint32_t rec_enc_time_idx_ = 0;
+    bool rec_enc_time_wrap_ = false;
+#endif
+
+    bool onProcess(const BaseUpdateHandler::ProcessArgs& args, float enc_motor_step, int32_t enc_step_dir)
     {
         if (is_found_) {
             return false;
         }
-        if (enc_count * enc_step_dir > limit_enc_count_ * enc_step_dir) {
-            limit_enc_count_ = enc_count;
-            limit_enc_time_ = enc_time;
+#if 0
+        if (count_ == 0) {
+            Ialpha_mean_ = args.Ialpha;
+            Ibeta_mean_ = args.Ibeta;
         }
+        Ialpha_mean_ += 0.2f * (args.Ialpha - Ialpha_mean_);
+        Ibeta_mean_ += 0.2f * (args.Ibeta - Ibeta_mean_);
+
+        const float Iangle = atan2f(Ibeta_mean_, Ialpha_mean_);
+
+        rec_detect_limit[rec_enc_time_idx_] = RecDetectLimit{args.enc_count, Iangle, wrap_pm_pi(args.phase)};
+        ++rec_enc_time_idx_;
+        if (rec_enc_time_idx_ == MAX_ENC_TIME_IDX) {
+            rec_enc_time_idx_ = 0;
+            rec_enc_time_wrap_ = true;
+        }
+#endif
+
+        if (args.enc_count * enc_step_dir > limit_enc_count_ * enc_step_dir) {
+            const float delta_time = float(args.enc_time - limit_enc_time_);
+            if (count_ == 0) {
+                delta_time_mean_ = float(delta_time);
+                delta_time_var_ = 0.0f;
+            }
+            constexpr float alpha = 0.01f;
+            delta_time_mean_ += alpha * (delta_time - delta_time_mean_);
+            const float diff = delta_time - delta_time_mean_;
+            delta_time_var_ += alpha * (diff * diff - delta_time_var_);
+            ++count_;
+
+            limit_enc_count_ = args.enc_count;
+            limit_enc_time_ = args.enc_time;
+        }
+
         if (count_ >= warm_up_count_) {
-            //float min_vel = std::max(vel_fast_mean_ - vel_slow_mean_ * vel_threshold_, vel_slow_mean_ * 0.1f);
-            const float mean_enc_dt = enc_motor_step / (vel_slow_mean_ * vel_threshold_);
-            const uint32_t enc_delta_time = DWT->CYCCNT - limit_enc_time_;
-            if (enc_delta_time >= uint32_t(mean_enc_dt * TIM_1_8_CLOCK_HZ)) {
+            const float delta_time = float(DWT->CYCCNT - limit_enc_time_);
+            const float delta_time_threshold = delta_time_mean_ + 5.0f * sqrtf(delta_time_var_);
+#if DEBUG_DETECT_LIMIT
+            rec_detect_limit[rec_enc_time_idx_] = RecDetectLimit{ enc_delta_time };
+            ++rec_enc_time_idx_;
+            if (rec_enc_time_idx_ == MAX_ENC_TIME_IDX) {
+                rec_enc_time_idx_ = 0;
+                rec_enc_time_wrap_ = true;
+            }
+#endif            
+            if (delta_time > delta_time_threshold) {
                 // motor limit detected
                 is_found_ = true;
                 return false;
             }
         }
         return true;
-    }
-
-    void onSample(int32_t sample_idx, float Id, float Iq, float vel, float acc)
-    {
-        constexpr float alpha_fast = 0.5f; // alpha = 2 / (N + 1), N - samples to average
-        constexpr float alpha_slow = 0.01f;
-
-        const float abs_vel = std::abs(vel);
-        if (count_ == 0) {
-            vel_fast_mean_ = abs_vel;
-            vel_slow_mean_ = abs_vel;
-        }
-        vel_fast_mean_ += alpha_fast * (abs_vel - vel_fast_mean_);
-        vel_slow_mean_ += alpha_slow * (abs_vel - vel_slow_mean_);
-
-        ++count_;
     }
 
     inline bool isFinished() const { return is_found_; }
@@ -567,8 +610,9 @@ private:
     uint32_t warm_up_count_;
 
     uint32_t count_;
-    float vel_fast_mean_;
-    float vel_slow_mean_;
+
+    float delta_time_mean_;
+    float delta_time_var_;
 
     int32_t limit_enc_count_;
     uint32_t limit_enc_time_;
@@ -594,14 +638,10 @@ public:
         stop_enc_count_ = std::max(lo_enc_count_ * start_state.enc_step_dir_, hi_enc_count_ * start_state.enc_step_dir_);
     }
 
-    bool onProcess(float phase, int32_t enc_count, uint32_t enc_time, float enc_motor_step, int32_t enc_step_dir)
+    bool onProcess(const BaseUpdateHandler::ProcessArgs& args, float enc_motor_step, int32_t enc_step_dir)
     {
-        is_stopped_ |= (enc_count * enc_step_dir >= stop_enc_count_);
+        is_stopped_ |= (args.enc_count * enc_step_dir >= stop_enc_count_);
         return !is_stopped_;
-    }
-
-    void onSample(int32_t sample_idx, float Id, float Iq, float vel, float acc)
-    {
     }
 
     inline bool isFinished() const { return is_stopped_; }
@@ -635,6 +675,10 @@ bool Calibrator::run_motor(F&& func, float timeout_seconds, bool error_on_timeou
     if (error_on_timeout)
     {
         axis_->motor_.disarm();
+#if DEBUG_LOG
+        printf("timeout: %f\n", timeout_seconds);
+        osDelay(10);
+#endif
         return false;
     }
     return true;
@@ -721,9 +765,6 @@ bool Calibrator::run_offset_calibration()
     const float enc2phase = float(pole_pairs) * 2.0f * M_PI / float(enc_cpr);
     const float phase2enc = float(enc_cpr) / (float(pole_pairs) * 2.0f * M_PI);
 
-
-    const int32_t detect_dir_enc_dist = config_.detect_dir_enc_dist;
-    const float detect_dir_timeout = 1.5f * detect_dir_enc_dist * enc2phase / config_.record_phase_speed;
 
     const float max_range_timeout = config_.max_motor_degree_range * degree2phase / config_.record_phase_speed;
 
@@ -818,37 +859,50 @@ bool Calibrator::run_offset_calibration()
     printf("C: %u, Ia: %f, Ib: %f, R: %f\n", measure_current_handler.getCount(), Ialpha, Ibeta, R);
     osDelay(5);
 #endif
-#if 0
+
+    // change current to start_lock_current and settle
     CRITICAL_SECTION() {
-        axis_->open_loop_controller_.target_voltage_ = config_.start_lock_current * R;
-        axis_->open_loop_controller_.max_voltage_ramp_ = axis_->open_loop_controller_.target_voltage_ / config_.start_lock_current_duration * 2.0f;
+        const float new_voltage = config_.start_lock_current * R;
+        axis_->open_loop_controller_.max_voltage_ramp_ = std::abs(new_voltage - axis_->open_loop_controller_.target_voltage_)
+                                                            / config_.start_lock_settle_duration * 2.0f;
+        axis_->open_loop_controller_.target_voltage_ = new_voltage;
     }
-    // hold start lock current
-    if (!run_motor_for_time(config_.start_lock_current_duration)) {
+    if (!run_motor_for_time(config_.start_lock_settle_duration)) {
         return false;
     }
-#endif
-    // scan phase forward and detect direction
-    int32_t init_enc_count = last_enc_count_;
-    int32_t phase_dir = 0;
+
+    // save current enc_count as initial
+    const int32_t init_enc_count = last_enc_count_;
 #if DEBUG_LOG
     printf("enc0=%d\n", init_enc_count);
     osDelay(5);
 #endif
 
+    // change current to record_current_1 and settle
+    CRITICAL_SECTION() {
+        const float new_voltage = config_.record_current_1 * R;
+        axis_->open_loop_controller_.max_voltage_ramp_ = std::abs(new_voltage - axis_->open_loop_controller_.target_voltage_)
+                                                            / config_.start_lock_settle_duration * 2.0f;
+        axis_->open_loop_controller_.target_voltage_ = new_voltage;
+    }
+    if (!run_motor_for_time(config_.start_lock_settle_duration)) {
+        return false;
+    }
+
+    // scan phase forward and detect direction
+    int32_t phase_dir = 0;
+
     CRITICAL_SECTION() {
         axis_->open_loop_controller_.target_vel_ = config_.record_phase_speed;
-        // change current
-        axis_->open_loop_controller_.target_voltage_ = config_.record_current_1 * R;
     }
     if (!run_motor([&](){
         const int32_t enc_count = last_enc_count_;
-        if (abs(enc_count - init_enc_count) >= detect_dir_enc_dist) {
+        if (abs(enc_count - init_enc_count) >= config_.detect_dir_enc_dist) {
             phase_dir = enc_count > init_enc_count ? 1 : -1;
             return true; // done
         }
         return false; // continue
-    }, detect_dir_timeout)) {
+    }, config_.detect_dir_timeout)) {
         // Encoder response error
         encoder.set_error(Encoder::ERROR_NO_RESPONSE);
         return false;
@@ -876,6 +930,14 @@ bool Calibrator::run_offset_calibration()
         encoder.config_.phase_offset = init_enc_count;
         encoder.config_.phase_offset_float = 0.5f;
         encoder.is_ready_ = true;
+
+        center_phase_ = 0.0f;
+        center_enc_pos_ = center_phase_ * phase_dir * phase2enc + (encoder.config_.phase_offset + encoder.config_.phase_offset_float);
+        lo_enc_pos_ = center_enc_pos_ - 1000;
+        hi_enc_pos_ = center_enc_pos_ + 1000;
+        enc2phase_ = enc2phase;
+        phase2enc_ = phase2enc;
+
         return true;
     }
 #endif
@@ -903,6 +965,34 @@ bool Calibrator::run_offset_calibration()
 #if DEBUG_LOG
     printf("lo_lim=%d %f\n", lo_enc_count, *axis_->open_loop_controller_.total_distance_.any());
     osDelay(5);
+#endif
+
+#if DEBUG_DETECT_LIMIT
+    // finish!!!
+    axis_->motor_.disarm();
+
+    printf("idx,enc_dt\n");
+    osDelay(5);
+
+    uint32_t rec_enc_time_beg = 0;
+    uint32_t rec_enc_time_end = detect_limit_with_record_handler.getLimitImpl().rec_enc_time_idx_;
+    if (detect_limit_with_record_handler.getLimitImpl().rec_enc_time_wrap_) {
+        rec_enc_time_beg = rec_enc_time_end;
+        rec_enc_time_end += MAX_ENC_TIME_IDX;
+    }
+    for (uint32_t rec_enc_time_idx = rec_enc_time_beg; rec_enc_time_idx < rec_enc_time_end; ++rec_enc_time_idx) {
+        uint32_t idx = rec_enc_time_idx - rec_enc_time_beg;
+        uint32_t read_idx = rec_enc_time_idx;
+        if (read_idx >= MAX_ENC_TIME_IDX) {
+            read_idx -= MAX_ENC_TIME_IDX;
+        }
+        const auto& rec = rec_detect_limit[read_idx];
+        //printf("%u, %d, %f, %f\n", idx, rec.enc_count, rec.Iangle, rec.phase);
+        printf("%u, %u\n", idx, rec.enc_dt);
+        osDelay(5);
+    }
+    osDelay(100);
+    return false;
 #endif
 
     // 1. forward record pass with I ~= record_current_1

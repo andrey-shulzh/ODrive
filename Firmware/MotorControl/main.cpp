@@ -430,7 +430,6 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
 
         MEASURE_TIME(axis.task_times_.encoder_update) {
             axis.encoder_.update();
-            axis.calibrator_.update(timestamp);
         }
     }
 
@@ -586,6 +585,13 @@ static void rtos_main(void*) {
     }
 
     odrv.system_stats_.fully_booted = true;
+#if 0
+    extern volatile int32_t irq_time_deviation;
+    for (;;) {
+        printf("%d\n", irq_time_deviation);
+        osDelay(200);
+    }
+#endif
 #if 0
     for (;;) {
         printf("M0: %.4f, %.4f | M1: %.4f, %.4f\r\n",

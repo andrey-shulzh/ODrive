@@ -61,6 +61,9 @@ public:
     float final_v_alpha_ = 0.0f; // [V]
     float final_v_beta_ = 0.0f; // [V]
     float power_ = 0.0f; // [W] dot product of Vdq and Idq
+
+    float last_phase_ = 0.0f;
+    float curr_phase_ = 0.0f;
 };
 
 #endif // __FOC_HPP

@@ -19,7 +19,7 @@ public:
 
     struct ProcessArgs
     {
-        uint32_t timestamp;
+        uint32_t current_meas_timestamp;
         float phase;
         int32_t enc_count;
         uint32_t enc_time;
@@ -28,8 +28,6 @@ public:
 
         Iph_ABC_t Iph_raw;
         Iph_ABC_t Iph_ofs;
-        //Iph_ABC_t Iph_meas;
-        //Iph_ABC_t Iph_calib;
     };
 
     virtual bool process(const ProcessArgs& args) { return true; }
@@ -48,12 +46,12 @@ public:
         float start_lock_voltage = 1.5f;  // [volt]
         float start_lock_settle_duration = 1.0f; // [sec]
         float start_lock_measure_duration = 1.0f; // [sec]
-        //float start_lock_current_duration = 1.0f; // [sec]
-        //float start_lock_current = 15.0f;  // [A]
+        float start_lock_current = 15.0f;  // [A]
 
         float detect_motion_duration = 1.0f; // [sec]
         float phase_settle_duration = 1.0f; // [sec]
 
+        float detect_dir_timeout = 1.0f; // [sec]
         int32_t detect_dir_enc_dist = 25;
         int32_t stop_limit_enc_ofs = 5;
         int32_t record_limit_enc_ofs = 50;
@@ -69,13 +67,13 @@ public:
         float center_phase_speed = M_PI;
         float center_lock_duration = 1.0f; // [sec]
 
-        float detect_limit_vel_threshold = 0.25f;
-        int32_t detect_limit_warm_up_count = 50;
+        float detect_limit_vel_threshold = 0.1f;
+        int32_t detect_limit_warm_up_count = 200;
     };
 
     Calibrator();
-    // called right after encoder.update() from 8 kHz interrupt!
-    bool update(uint32_t timestamp);
+    // called from ControlLoop_IRQHandler 8 kHz interrupt!
+    bool update(uint32_t current_meas_timestamp);
     // called from axis thread!
     bool run_offset_calibration();
 

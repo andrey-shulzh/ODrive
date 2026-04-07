@@ -145,31 +145,39 @@ bool Controller::update() {
     std::optional<float> inp_phase_vel = phase_vel_src_.present();
 
     const float curr_enc_pos = float(axis_->encoder_.shadow_count_) + 0.5f; // for now just simple center-aligned position
+    const float curr_phase = axis_->calibrator_.enc2phase_ * axis_->encoder_.config_.direction *
+        (float(axis_->encoder_.shadow_count_ - axis_->encoder_.config_.phase_offset) + 0.5f - axis_->encoder_.config_.phase_offset_float);
 
     float Iq_set = 0.0f;
     float Id_set = 0.0f;
-#if 0
-    const float I_break = 3.0f;
-    const float I_limit = 21.0f;
+#if 1
+    const float I_break = 5.0f;
+    const float I_limit = 10.0f;
 
     constexpr float sin_15 = 0.258819f;
     constexpr float rad_15 = 15 * (M_PI / 180.0f);
+    constexpr float rad_5 = 5 * (M_PI / 180.0f);
 
     const float center_enc_pos = axis_->calibrator_.center_enc_pos_;
     const float enc_from_center = curr_enc_pos - center_enc_pos;
     const float enc_15_delta = rad_15 * axis_->calibrator_.phase2enc_;
 
-    if (std::abs(enc_from_center) < enc_15_delta) {
+    const float phase_from_center = enc_from_center * axis_->calibrator_.enc2phase_;
+    const float abs_phase_from_center = fabs(phase_from_center);
+
+
+
+    if (abs_phase_from_center < rad_15) {
         // breakout zone
-        const float s = std::abs(enc_from_center) / enc_15_delta;
-        Id_set = I_break * s / sin_15;
+        const float s = std::min(abs_phase_from_center / rad_5, 1.0f);
+        Id_set = s * I_break / sin_15;
         Iq_set = 0.0f;
 
         phase_ = wrap_pm_pi(axis_->calibrator_.center_phase_);
         phase_vel_ = 0.0f;
     } else {
         // force curve zone
-        if (enc_from_center >= enc_15_delta) {
+        if (phase_from_center >= rad_15) {
             const float center_hi = center_enc_pos + enc_15_delta;
             const float s = (curr_enc_pos - center_hi) / (axis_->calibrator_.hi_enc_pos_ - center_hi);
             Iq_set = -(I_break + s * (I_limit - I_break));
@@ -179,26 +187,46 @@ bool Controller::update() {
             Iq_set = +(I_break + s * (I_limit - I_break));
         }
         Id_set = 0.0f;
-        const float phase_from_center = std::abs(enc_from_center * axis_->calibrator_.enc2phase_);
-        if (phase_from_center < M_PI * 0.5f) {
+        if (abs_phase_from_center < M_PI * 0.5f) {
             // 90 degree Id fade off
-            Id_set = std::abs(Iq_set) * cosf(phase_from_center) / sinf(phase_from_center);
+            Id_set = fabs(Iq_set) * cosf(abs_phase_from_center) / sinf(abs_phase_from_center);
         }
-        phase_ = *inp_phase;
-        phase_vel_ = *inp_phase_vel;
+        phase_ = wrap_pm_pi(curr_phase);
+        phase_vel_ = 0.0f;
     }
 #else
+
+#if 0
+    constexpr float sin_15 = 0.258819f;
+    constexpr float rad_15 = 15 * (M_PI / 180.0f);
+
+    const float center_enc_pos = axis_->calibrator_.center_enc_pos_;
+    const float enc_from_center = curr_enc_pos - center_enc_pos;
+    const float enc_15_delta = rad_15 * axis_->calibrator_.phase2enc_;
+
+    float s = 1.0f;
+    if (std::abs(enc_from_center) < enc_15_delta) {
+        const float s = std::abs(enc_from_center) / enc_15_delta;
+    }
+    if (enc_from_center >= 0.0f) {
+        Iq_set = -s * 5.0f;
+    } else {
+        Iq_set = +s * 5.0f;
+    }
+
+#endif
+
     phase_ = *inp_phase;
     phase_vel_ = *inp_phase_vel;
 #endif
+#if 1
     if (config_.anticogging.anticogging_enabled) {
         // anti-cogging
         Iq_set += axis_->calibrator_.sample_I_cog_map(curr_enc_pos);
     }
-
     const float Id_hd = axis_->calibrator_.sample_Id_hd_map(curr_enc_pos);
     Iq_set -= Id_set * Id_hd; // compensate Id harmonic distortions
-
+#endif
     Idq_setpoint_ = {Id_set, Iq_set};
     Vdq_setpoint_ = {0.0f, 0.0f};
     return true;

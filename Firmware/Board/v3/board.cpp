@@ -297,6 +297,12 @@ void system_init() {
 }
 
 bool board_init() {
+    // turn on DWT
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    //
+
     // Initialize all configured peripherals
     MX_GPIO_Init();
     MX_DMA_Init();
@@ -334,11 +340,6 @@ bool board_init() {
     HAL_NVIC_SetPriority(TIM8_UP_TIM13_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
 
-    // turn on DWT
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-    //
 #if ENC_TIME_FROM_TIMER
     MX_TIM7_Init();
     HAL_NVIC_SetPriority(TIM7_IRQn, 0, 0);
@@ -515,8 +516,12 @@ void TIM7_IRQHandler(void) {
 
 volatile uint32_t timestamp_ = 0;
 volatile bool counting_down_ = false;
+volatile bool is_first_irq = true;
+volatile int32_t irq_time_deviation = 0;
 
 void TIM8_UP_TIM13_IRQHandler(void) {
+    const uint32_t entry_time = DWT->CYCCNT;
+
     COUNT_IRQ(TIM8_UP_TIM13_IRQn);
     
     // Entry into this function happens at 21-23 clock cycles after the timer
@@ -535,7 +540,15 @@ void TIM8_UP_TIM13_IRQHandler(void) {
     }
     counting_down_ = counting_down;
 
-    timestamp_ += TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1);
+    constexpr uint32_t irq_delay = 23;
+    if (is_first_irq) {
+        timestamp_ = entry_time - irq_delay;
+        is_first_irq = false;
+    } else {
+        timestamp_ += TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1);
+
+        irq_time_deviation = int32_t(timestamp_ - (entry_time - irq_delay));
+    }
 
     if (!counting_down) {
         TaskTimer::enabled = odrv.task_timers_armed_;
@@ -614,6 +627,9 @@ void ControlLoop_IRQHandler(void) {
 
     odrv.task_timers_armed_ = odrv.task_timers_armed_ && !TaskTimer::enabled;
     TaskTimer::enabled = false;
+
+    calibrators[0].update(timestamp - TIM1_INIT_COUNT);
+    calibrators[1].update(timestamp);
 }
 
 void I2C1_EV_IRQHandler(void) {
