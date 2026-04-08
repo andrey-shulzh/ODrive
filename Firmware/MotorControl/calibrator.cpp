@@ -7,7 +7,7 @@
 #define DEBUG_LOG 1
 #define DEBUG_CURRENT 0
 #define DEBUG_DETECT_LIMIT 0
-
+#define DEBUG_FAST_EXIT_NO_MAPS 0
 
 BaseUpdateHandler Calibrator::empty_update_handler_;
 
@@ -917,7 +917,7 @@ bool Calibrator::run_offset_calibration()
     osDelay(5);
 #endif
 
-#if 0
+#if DEBUG_FAST_EXIT_NO_MAPS
     {
         // finish!!!
         axis_->motor_.disarm();

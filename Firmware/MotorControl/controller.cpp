@@ -145,7 +145,8 @@ bool Controller::update() {
     std::optional<float> inp_phase_vel = phase_vel_src_.present();
 
     const float curr_enc_pos = float(axis_->encoder_.shadow_count_) + 0.5f; // for now just simple center-aligned position
-    const float curr_phase = axis_->calibrator_.enc2phase_ * axis_->encoder_.config_.direction *
+    const float phase_dir = axis_->encoder_.config_.direction;
+    const float curr_phase = axis_->calibrator_.enc2phase_ * phase_dir *
         (float(axis_->encoder_.shadow_count_ - axis_->encoder_.config_.phase_offset) + 0.5f - axis_->encoder_.config_.phase_offset_float);
 
     float Iq_set = 0.0f;
@@ -156,66 +157,54 @@ bool Controller::update() {
 
     constexpr float sin_15 = 0.258819f;
     constexpr float rad_15 = 15 * (M_PI / 180.0f);
-    constexpr float rad_5 = 5 * (M_PI / 180.0f);
 
     const float center_enc_pos = axis_->calibrator_.center_enc_pos_;
     const float enc_from_center = curr_enc_pos - center_enc_pos;
     const float enc_15_delta = rad_15 * axis_->calibrator_.phase2enc_;
 
-    const float phase_from_center = enc_from_center * axis_->calibrator_.enc2phase_;
+    const float phase_from_center = enc_from_center * axis_->calibrator_.enc2phase_ * phase_dir;
     const float abs_phase_from_center = fabs(phase_from_center);
 
-
-
+    float out_phase;
     if (abs_phase_from_center < rad_15) {
         // breakout zone
-        const float s = std::min(abs_phase_from_center / rad_5, 1.0f);
-        Id_set = s * I_break / sin_15;
+        const float s = abs_phase_from_center / rad_15;
+        const float I_center = s * I_break / sin_15;
+        Id_set = I_center;
         Iq_set = 0.0f;
-
-        phase_ = wrap_pm_pi(axis_->calibrator_.center_phase_);
-        phase_vel_ = 0.0f;
+        out_phase = axis_->calibrator_.center_phase_;
     } else {
-        // force curve zone
+        // effect force curve
+        float Iq_effect;
         if (phase_from_center >= rad_15) {
             const float center_hi = center_enc_pos + enc_15_delta;
             const float s = (curr_enc_pos - center_hi) / (axis_->calibrator_.hi_enc_pos_ - center_hi);
-            Iq_set = -(I_break + s * (I_limit - I_break));
+            Iq_effect = -(I_break + s * (I_limit - I_break));
         } else {
             const float center_lo = center_enc_pos - enc_15_delta;
             const float s = (curr_enc_pos - center_lo) / (axis_->calibrator_.lo_enc_pos_ - center_lo);
-            Iq_set = +(I_break + s * (I_limit - I_break));
+            Iq_effect = +(I_break + s * (I_limit - I_break));
         }
         Id_set = 0.0f;
+        Iq_set = Iq_effect;
+        out_phase = curr_phase;
         if (abs_phase_from_center < M_PI * 0.5f) {
-            // 90 degree Id fade off
-            Id_set = fabs(Iq_set) * cosf(abs_phase_from_center) / sinf(abs_phase_from_center);
+            // should be smooth if Iq_effect(15 degree) starts from I_break!
+            const float I_center = fabs(Iq_effect) / sinf(abs_phase_from_center);
+
+            // out_phase_from_center goes from 0 to 90 degree for phase_from_center from 15 to 90 degree
+            constexpr float out_phase_scale = 90.0f / (90.0f - 15.0f);
+            const float out_phase_from_center = (phase_from_center - std::copysign(rad_15, phase_from_center)) * out_phase_scale;
+
+            // project I_center to out_phase_from_center
+            Id_set = I_center * cosf(out_phase_from_center);
+            Iq_set = I_center * -sinf(out_phase_from_center);
+            out_phase = axis_->calibrator_.center_phase_ + out_phase_from_center;
         }
-        phase_ = wrap_pm_pi(curr_phase);
-        phase_vel_ = 0.0f;
     }
+    phase_ = wrap_pm_pi(out_phase);
+    phase_vel_ = 0.0f;
 #else
-
-#if 0
-    constexpr float sin_15 = 0.258819f;
-    constexpr float rad_15 = 15 * (M_PI / 180.0f);
-
-    const float center_enc_pos = axis_->calibrator_.center_enc_pos_;
-    const float enc_from_center = curr_enc_pos - center_enc_pos;
-    const float enc_15_delta = rad_15 * axis_->calibrator_.phase2enc_;
-
-    float s = 1.0f;
-    if (std::abs(enc_from_center) < enc_15_delta) {
-        const float s = std::abs(enc_from_center) / enc_15_delta;
-    }
-    if (enc_from_center >= 0.0f) {
-        Iq_set = -s * 5.0f;
-    } else {
-        Iq_set = +s * 5.0f;
-    }
-
-#endif
-
     phase_ = *inp_phase;
     phase_vel_ = *inp_phase_vel;
 #endif
