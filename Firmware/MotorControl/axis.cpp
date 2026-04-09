@@ -42,7 +42,7 @@ Axis::Axis(int axis_num,
     min_endstop_.axis_ = this;
     max_endstop_.axis_ = this;
     mechanical_brake_.axis_ = this;
-    calibrator_.axis_ = this;
+    calibrator_.getImpl().axis_ = this;
 }
 
 Axis::LockinConfig_t Axis::default_calibration() {
@@ -538,7 +538,7 @@ void Axis::run_state_machine_loop() {
                 if (!motor_.is_calibrated_)
                     goto invalid_state_label;
                 //status = encoder_.run_offset_calibration();
-                status = calibrator_.run_offset_calibration();
+                status = calibrator_.run();
             } break;
 
             case AXIS_STATE_LOCKIN_SPIN: {

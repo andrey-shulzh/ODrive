@@ -1,47 +1,21 @@
 #ifndef __CALIBRATOR_HPP
 #define __CALIBRATOR_HPP
 
-#include "utils.hpp"
+#include "calibrator_impl.hpp"
 
-#define RECORD_SAMPLES 1
-
-constexpr uint32_t I_COG_MAP_MAX_SAMPLES = 1408;
-constexpr uint32_t Id_HD_MAP_NUM_SAMPLES = 256; // should be 2^n
-
-class Axis;
+constexpr float _PI = 3.14159265358979323846f;
 
 
-class BaseUpdateHandler
-{
-public:
-    BaseUpdateHandler() = default;
-    virtual ~BaseUpdateHandler() = default;
-
-    struct ProcessArgs
-    {
-        uint32_t current_meas_timestamp;
-        float phase;
-        int32_t enc_count;
-        uint32_t enc_time;
-
-        float Ialpha, Ibeta;
-
-        Iph_ABC_t Iph_raw;
-        Iph_ABC_t Iph_ofs;
-    };
-
-    virtual bool process(const ProcessArgs& args) { return true; }
-};
-
-struct RecSample;
 struct SamplingStartState;
 
-class CalibratorSafeReturn;
+class DetectMotionUpdateHandler;
 
 class Calibrator
 {
-    friend class CalibratorSafeReturn;
 public:
+    static constexpr uint32_t I_COG_MAP_MAX_SAMPLES = CALIB_MAX_SAMPLES;
+    static constexpr uint32_t Id_HD_MAP_NUM_SAMPLES = 256; // should be 2^n
+
     struct Config_t {
         float start_lock_voltage = 1.5f;  // [volt]
         float start_lock_settle_duration = 1.0f; // [sec]
@@ -52,32 +26,35 @@ public:
         float phase_settle_duration = 1.0f; // [sec]
 
         float detect_dir_timeout = 1.0f; // [sec]
-        int32_t detect_dir_enc_dist = 25;
+        int32_t detect_dir_enc_dist = 50;
         int32_t stop_limit_enc_ofs = 5;
         int32_t record_limit_enc_ofs = 50;
 
         int32_t sample_size = 5;
 
         float max_motor_degree_range = 130.0f;
-        float record_phase_speed = M_PI / 2.0f;
+        float record_phase_speed = _PI / 2.0f;
+
+        float phase_speed_threshold_mult = 3.0f;
 
         float record_current_1 = 5.0f;
         float record_current_2 = 15.0f;
 
-        float center_phase_speed = M_PI;
+        float center_phase_speed = _PI;
         float center_lock_duration = 1.0f; // [sec]
 
-        float detect_limit_vel_threshold = 0.1f;
-        int32_t detect_limit_warm_up_count = 200;
+        uint32_t detect_limit_warm_up_count = 200;
+        float detect_limit_filter_alpha = 0.01f; // 2/(N + 1) ~ 199 samples
+        float detect_limit_threshold_mult = 5.0f;
     };
 
-    Calibrator();
-    // called from ControlLoop_IRQHandler 8 kHz interrupt!
-    bool update(uint32_t current_meas_timestamp);
-    // called from axis thread!
-    bool run_offset_calibration();
+    Calibrator() = default;
 
-    Axis* axis_ = nullptr; // set by Axis constructor
+    // called from axis thread!
+    bool run();
+
+    CalibratorImpl& getImpl() { return impl_; }
+
     Config_t config_;
 
     float center_phase_;
@@ -92,18 +69,20 @@ public:
 
 private:
     template <typename F>
-    bool run_motor(F&& func, float timeout_seconds, bool error_on_timeout = true);
+    bool runMotor(F&& func, float timeout_seconds, bool error_on_timeout = true);
 
-    bool run_motor_for_time(float duration_seconds);
+    bool runMotorForTime(float duration_seconds);
+
+    bool runDetectMotion(DetectMotionUpdateHandler& update_handler, const SamplingStartState& start_state, int32_t start_enc_count);
 
     template <typename T>
-    bool run_record_pass(T& update_handler, const SamplingStartState& start_state, std::optional<float> start_phase, RecSample* rec_samples, float timeout);
+    bool runRecordPass(T& update_handler, const SamplingStartState& start_state, CalibratorSample* rec_samples, float timeout,
+                       std::optional<float> start_phase = std::nullopt, std::optional<float> set_voltage = std::nullopt);
 
-    float build_maps(const SamplingStartState& lo_start_state, const SamplingStartState& hi_start_state);
+    float buildMaps(const SamplingStartState& lo_start_state, const SamplingStartState& hi_start_state);
 
 private:
-    static BaseUpdateHandler empty_update_handler_;
-    BaseUpdateHandler* volatile update_handler_ = &empty_update_handler_;
+    CalibratorImpl impl_;
 
     uint32_t I_cog_map_size_;
     float I_cog_map_enc_beg_;
@@ -113,9 +92,6 @@ private:
     float Id_hd_map_enc_start_;
     float Id_hd_map_enc_period_;
     float Id_hd_map_[Id_HD_MAP_NUM_SAMPLES];
-
-    volatile uint32_t last_enc_time_;
-    volatile int16_t last_enc_count_;
 };
 
 #endif // __CALIBRATOR_HPP
