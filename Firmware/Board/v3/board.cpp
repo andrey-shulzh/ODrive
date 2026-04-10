@@ -628,8 +628,8 @@ void ControlLoop_IRQHandler(void) {
     odrv.task_timers_armed_ = odrv.task_timers_armed_ && !TaskTimer::enabled;
     TaskTimer::enabled = false;
 
-    calibrators[0].getImpl().update(timestamp - TIM1_INIT_COUNT);
-    calibrators[1].getImpl().update(timestamp);
+    calibrators[0].getImpl().update(timestamp - TIM1_INIT_COUNT, timestamp);
+    calibrators[1].getImpl().update(timestamp, timestamp);
 }
 
 void I2C1_EV_IRQHandler(void) {

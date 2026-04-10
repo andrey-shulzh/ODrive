@@ -20,11 +20,8 @@ public:
 
     Axis* axis_ = nullptr; // set by Axis constructor
 
-    volatile uint32_t last_enc_time_;
-    volatile int16_t last_enc_count_;
-
     // called from ControlLoop_IRQHandler at 8 kHz!
-    bool update(uint32_t current_meas_timestamp);
+    bool update(uint32_t i_meas_timestamp, uint32_t ctrl_timestamp);
 
     int32_t getEncoderCPR() const;
     int32_t getMotorPolePairs() const;
@@ -47,13 +44,17 @@ public:
 
     struct ControlParams
     {
-        std::optional<float> phase;
+        std::optional<float> phase_dist;
         std::optional<float> phase_vel;
 
-        std::optional<float> voltage_change_time;
-        std::optional<float> voltage;
+        std::optional<std::pair<float, float>> voltage_value_and_time;
     };
     void setControlParams(const ControlParams& params);
+
+public:
+    volatile int32_t last_enc_count_;
+    volatile uint32_t last_enc_time_;
+    volatile float last_phase_dist_;
 
 private:
     static CalibratorUpdateHandler empty_update_handler_;

@@ -11,7 +11,6 @@
 #include <cmsis_os.h> // for osDelay
 
 
-#define RECORD_SAMPLES 1
 #define DEBUG_LOG 1
 #define DEBUG_FAST_EXIT_NO_MAPS 0
 
@@ -68,7 +67,7 @@ public:
     {
         enc_step_dir_ = enc_step_dir;
         start_enc_count_ = start_enc_count;
-        detect_enc_count_ = start_enc_count * enc_step_dir + start_enc_ofs;
+        detect_enc_target_ = start_enc_count * enc_step_dir + start_enc_ofs;
 
         is_detected_ = false;
     }
@@ -78,10 +77,10 @@ public:
         if (is_detected_) {
             return false;
         }
-        if (args.enc_count * enc_step_dir_ > detect_enc_count_) {
+        if (args.enc_count * enc_step_dir_ > detect_enc_target_) {
             is_detected_ = true;
             detected_enc_count_ = args.enc_count;
-            detected_phase_ = args.phase;
+            detected_phase_dist_ = args.phase_dist;
             return false;
         }
         return true;
@@ -93,7 +92,7 @@ public:
 
     float evalStartPhase(float enc2phase)
     {
-        return detected_phase_ + float(start_enc_count_ - detected_enc_count_) * phase_dir_ * enc2phase;
+        return detected_phase_dist_ + float(start_enc_count_ - detected_enc_count_) * phase_dir_ * enc2phase;
     }
 
 private:
@@ -101,11 +100,11 @@ private:
 
     int32_t enc_step_dir_;
     int32_t start_enc_count_;
-    int32_t detect_enc_count_;
+    int32_t detect_enc_target_;
 
     bool is_detected_;
     int32_t detected_enc_count_;
-    float detected_phase_;
+    float detected_phase_dist_;
 };        
 
 
@@ -211,23 +210,21 @@ public:
     using Current_Filter_t = GeneralFilter_SG7;
     static_assert(Current_Filter_t::Len == Velocity_Filter_t::Len + 1);
 
-    static constexpr float phase_speed_threshold_ = 3.0f;
-
 
     SamplingUpdateHandler() {}
     virtual ~SamplingUpdateHandler() = default;
 
-    void init(const SamplingInitArgs& args)
+    void init(const SamplingInitArgs& init_args)
     {
-        init_enc_count_ = args.init_enc_count;
-        phase_dir_ = args.phase_dir;
-        sample_size_ = args.sample_size;
+        init_enc_count_ = init_args.init_enc_count;
+        phase_dir_ = init_args.phase_dir;
+        sample_size_ = init_args.sample_size;
 
-        enc_motor_step_ = 2.0f * _PI / float(args.enc_cpr);
-        enc_phase_step_ = enc_motor_step_ * float(args.pole_pairs);
-        motor_acc_scale_ = 0.5f / (args.sample_size * enc_motor_step_);
+        enc_motor_step_ = 2.0f * _PI / float(init_args.enc_cpr);
+        enc_phase_step_ = enc_motor_step_ * float(init_args.pole_pairs);
+        motor_acc_scale_ = 0.5f / (init_args.sample_size * enc_motor_step_);
 
-        enc_min_delta_time_ = uint32_t(CalibratorImpl::CLOCK_HZ * enc_phase_step_ / args.threshold_phase_speed);
+        enc_min_delta_time_ = uint32_t(CalibratorImpl::CLOCK_HZ * enc_phase_step_ / init_args.threshold_phase_speed);
     }
 
     inline float getPhaseDir() const { return phase_dir_; }
@@ -288,7 +285,7 @@ public:
             ++enc_accum_count_;
         };
 
-        const bool do_enc_accum_before = (args.enc_time > args.current_meas_timestamp);
+        const bool do_enc_accum_before = (args.enc_time > args.i_meas_timestamp);
         if (do_enc_accum_before) {
             do_enc_accum(args);
         }
@@ -472,9 +469,10 @@ public:
         }
 
         if (args.enc_count * enc_step_dir > limit_enc_count_ * enc_step_dir) {
+            // enc_time should be > limit_enc_time_
             const float delta_time = float(args.enc_time - limit_enc_time_);
             if (count_ == 0) {
-                delta_time_mean_ = float(delta_time);
+                delta_time_mean_ = delta_time;
                 delta_time_var_ = 0.0f;
             }
             delta_time_mean_ += init_args_.filter_alpha * (delta_time - delta_time_mean_);
@@ -487,7 +485,8 @@ public:
         }
 
         if (count_ >= init_args_.warm_up_count) {
-            const float delta_time = float(args.call_timestamp - limit_enc_time_);
+            // args.update_timestamp could be < limit_enc_time_
+            const float delta_time = float(int32_t(args.update_timestamp - limit_enc_time_));
             const float delta_time_threshold = delta_time_mean_ + sqrtf(delta_time_var_) * init_args_.threshold_mult;
             if (delta_time > delta_time_threshold) {
                 // motor limit detected
@@ -606,10 +605,9 @@ bool Calibrator::runRecordPass(T& update_handler, const SamplingStartState& star
 {
     if (start_phase.has_value()) {
         CalibratorImpl::ControlParams ctrl_params{};
-        ctrl_params.phase = *start_phase;
+        ctrl_params.phase_dist = *start_phase;
         if (set_voltage.has_value()) {
-            ctrl_params.voltage_change_time = 0.5f * config_.phase_settle_duration;
-            ctrl_params.voltage = *set_voltage;
+            ctrl_params.voltage_value_and_time = std::make_pair(*set_voltage, 0.5f * config_.phase_settle_duration);
         }
         CRITICAL_SECTION() {
             impl_.setControlParams(ctrl_params);
@@ -619,9 +617,8 @@ bool Calibrator::runRecordPass(T& update_handler, const SamplingStartState& star
             return false;
         }
     }
-#if RECORD_SAMPLES
+
     update_handler.getRecordImpl().init(rec_samples);
-#endif
     {
         CalibratorImpl::ControlParams ctrl_params{};
         const float vel_dir = update_handler.getPhaseDir() * start_state.enc_step_dir_;
@@ -663,10 +660,8 @@ namespace
 
 bool Calibrator::run()
 {
-#if RECORD_SAMPLES
     memset(CalibratorImpl::getSamples1(), 0, sizeof(CalibratorSample) * CALIB_MAX_SAMPLES);
     memset(CalibratorImpl::getSamples2(), 0, sizeof(CalibratorSample) * CALIB_MAX_SAMPLES);
-#endif
 
     const int32_t enc_cpr = impl_.getEncoderCPR();
     const int32_t pole_pairs = impl_.getMotorPolePairs();
@@ -698,8 +693,7 @@ bool Calibrator::run()
     // go to start position for start_lock_settle_duration
     {
         CalibratorImpl::ControlParams ctrl_params{};
-        ctrl_params.voltage_change_time = 0.5f * config_.start_lock_settle_duration;
-        ctrl_params.voltage = config_.start_lock_voltage;
+        ctrl_params.voltage_value_and_time = std::make_pair(config_.start_lock_voltage, 0.5f * config_.start_lock_settle_duration);
         CRITICAL_SECTION() {
             impl_.setControlParams(ctrl_params);
         }
@@ -734,8 +728,7 @@ bool Calibrator::run()
     // change current to start_lock_current and settle
     {
         CalibratorImpl::ControlParams ctrl_params{};
-        ctrl_params.voltage_change_time = 0.5f * config_.start_lock_settle_duration;
-        ctrl_params.voltage = config_.start_lock_current * R;
+        ctrl_params.voltage_value_and_time = std::make_pair(R * config_.start_lock_current, 0.5f * config_.start_lock_settle_duration);
         CRITICAL_SECTION() {
             impl_.setControlParams(ctrl_params);
         }
@@ -754,8 +747,7 @@ bool Calibrator::run()
     // change current to record_current_1 and settle
     {
         CalibratorImpl::ControlParams ctrl_params{};
-        ctrl_params.voltage_change_time = 0.5f * config_.start_lock_settle_duration;
-        ctrl_params.voltage = config_.record_current_1 * R;
+        ctrl_params.voltage_value_and_time = std::make_pair(R * config_.record_current_1, 0.5f * config_.start_lock_settle_duration);
         CRITICAL_SECTION() {
             impl_.setControlParams(ctrl_params);
         }
@@ -792,7 +784,7 @@ bool Calibrator::run()
     }
     // direction detected!
 #if DEBUG_LOG
-    printf("enc=%d, ph_dir=%d\n", int32_t(impl_.last_enc_count_), phase_dir);
+    printf("enc=%d, ph=%f, ph_dir=%d\n", int32_t(impl_.last_enc_count_), impl_.last_phase_dist_, phase_dir);
     osDelay(5);
 #endif
 
@@ -840,7 +832,7 @@ bool Calibrator::run()
     // get lo-limit
     const int32_t lo_enc_count = detect_limit_with_record_handler.getLimitImpl().getFoundLimit();
 #if DEBUG_LOG
-    printf("lo_lim=%d\n", lo_enc_count);
+    printf("lo_lim=%d, ph=%f\n", lo_enc_count, impl_.last_phase_dist_);
     osDelay(5);
 #endif
 
@@ -870,10 +862,9 @@ bool Calibrator::run()
     // get hi-limit
     const int32_t hi_enc_count = detect_limit_with_record_handler.getLimitImpl().getFoundLimit();
 #if DEBUG_LOG    
-    printf("hi_lim=%d\n", hi_enc_count);
+    printf("hi_lim=%d, ph=%f\n", hi_enc_count, impl_.last_phase_dist_);
     osDelay(5);
 #endif
-
 
     stop_at_limit_with_record_handler.getLimitImpl().init(lo_enc_count + config_.stop_limit_enc_ofs, hi_enc_count - config_.stop_limit_enc_ofs);
 
@@ -905,7 +896,7 @@ bool Calibrator::run()
 
     // 3. forward record pass with I ~= record_current_2 (at the start change current to record_current_2!)
     if (!runRecordPass(stop_at_limit_with_record_handler, lo_start_state, CalibratorImpl::getSamples2(), max_range_timeout, lo_start_phase,
-                       config_.record_current_2 * R)) {
+                       R * config_.record_current_2)) {
         return false;
     }
 
@@ -914,24 +905,24 @@ bool Calibrator::run()
         return false;
     }
 
-    const int32_t center_enc_count = (lo_enc_edge_pos + hi_enc_edge_pos) / 2;
     // 5. return to center
     {
+        const float center_phase = 0.5f * (lo_start_phase + hi_start_phase);
+        const float center_phase_target = center_phase * phase_dir;
+
+        // move to center_phase
         CalibratorImpl::ControlParams ctrl_params{};
-        ctrl_params.phase = lo_start_phase;
+        ctrl_params.phase_dist = lo_start_phase;
         ctrl_params.phase_vel = phase_dir * config_.center_phase_speed;
         CRITICAL_SECTION() {
             impl_.setControlParams(ctrl_params);
         }
-        if (!runMotor([&](){ return (impl_.last_enc_count_ >= center_enc_count); }, max_range_timeout)) {
+        if (!runMotor([&](){ return (impl_.last_phase_dist_ * phase_dir >= center_phase_target); }, max_range_timeout)) {
             return false;
         }
-    }
-    const float center_phase = (lo_start_phase + hi_start_phase) * 0.5f;
-    // stop phase velocity and lock at center
-    {
-        CalibratorImpl::ControlParams ctrl_params{};
-        ctrl_params.phase = center_phase;
+
+        // stop phase velocity and lock at center_phase
+        ctrl_params.phase_dist = center_phase;
         ctrl_params.phase_vel = 0.0f;
         CRITICAL_SECTION() {
             impl_.setControlParams(ctrl_params);
@@ -940,37 +931,38 @@ bool Calibrator::run()
             return false;
         }
     }
-#if DEBUG_LOG
-    printf("center_enc=%d\n", impl_.last_enc_count_);
-    osDelay(5);
-#endif
 
     // FINISH!!!
     impl_.shutdownMotor();
 
-#if DEBUG_LOG && RECORD_SAMPLES
-    printf("~~~samples_I1~~~\n");
-    osDelay(5);
-    printf("idx,Id,Iq\n");
-    osDelay(5);
-    for (uint32_t idx = lo_start_state.start_sample_idx_; idx <= hi_start_state.start_sample_idx_; ++idx)
+#if DEBUG_LOG
     {
-        const auto& s = CalibratorImpl::getSamples1()[idx];
-        printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+        const CalibratorSample* rec_samples1 = CalibratorImpl::getSamples1();
+        printf("~~~samples_I1~~~\n");
         osDelay(5);
-    }
-    osDelay(100);
-    printf("~~~samples_I2~~~\n");
-    osDelay(5);
-    printf("idx,Id,Iq\n");
-    osDelay(5);
-    for (uint32_t idx = lo_start_state.start_sample_idx_; idx <= hi_start_state.start_sample_idx_; ++idx)
-    {
-        const auto& s = CalibratorImpl::getSamples2()[idx];
-        printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+        printf("idx,Id,Iq\n");
         osDelay(5);
+        for (uint32_t idx = lo_start_state.start_sample_idx_; idx <= hi_start_state.start_sample_idx_; ++idx)
+        {
+            const auto& s = rec_samples1[idx];
+            printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+            osDelay(5);
+        }
+        osDelay(100);
+
+        const CalibratorSample* rec_samples2 = CalibratorImpl::getSamples2();
+        printf("~~~samples_I2~~~\n");
+        osDelay(5);
+        printf("idx,Id,Iq\n");
+        osDelay(5);
+        for (uint32_t idx = lo_start_state.start_sample_idx_; idx <= hi_start_state.start_sample_idx_; ++idx)
+        {
+            const auto& s = rec_samples2[idx];
+            printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+            osDelay(5);
+        }
+        osDelay(100);
     }
-    osDelay(100);
 #endif
     
     const float delta_phase = buildMaps(lo_start_state, hi_start_state);
@@ -978,14 +970,14 @@ bool Calibrator::run()
 
     impl_.setEncoderReady(init_enc_count, delta_enc, phase_dir);
 
-    center_phase_ = center_phase;
-    center_enc_pos_ = center_phase * phase_dir * phase2enc + (init_enc_count + 0.5f + delta_enc);
+    center_enc_pos_ = 0.5f * (lo_enc_edge_pos + hi_enc_edge_pos);
+    center_phase_ = (center_enc_pos_ - (init_enc_count + 0.5f + delta_enc)) * phase_dir * enc2phase;
     lo_enc_pos_ = lo_enc_edge_pos;
     hi_enc_pos_ = hi_enc_edge_pos;
     enc2phase_ = enc2phase;
     phase2enc_ = phase2enc;
 #if DEBUG_LOG
-    printf("center=%f, %f - %f\n", center_enc_pos_, lo_enc_pos_, hi_enc_pos_);
+    printf("center=%f (%f -> %f)\n", center_enc_pos_, lo_enc_pos_, hi_enc_pos_);
     osDelay(5);
 #endif
     return true;
@@ -1058,16 +1050,14 @@ float Calibrator::buildMaps(const SamplingStartState& lo_start_state, const Samp
     };
 
     CalibratorSample* samples_I1 = CalibratorImpl::getSamples1();
-    CalibratorSample* samples_I2 = CalibratorImpl::getSamples2();
-    CalibratorSample* samples_diffI = samples_I2;
+    CalibratorSample* samples_diffI = CalibratorImpl::getSamples2();
 
-    // compute delta Id, delta_Iq
+    // compute diff {Id, Iq}
     for (uint32_t idx = lo_start_state.start_sample_idx_; idx <= hi_start_state.start_sample_idx_; ++idx) {
         const CalibratorSample& s_I1 = samples_I1[idx];
-        const CalibratorSample& s_I2 = samples_I2[idx];
-        CalibratorSample& s_diffI = samples_diffI[idx];
-        s_diffI.Id = s_I2.Id - s_I1.Id;
-        s_diffI.Iq = s_I2.Iq - s_I1.Iq;
+        CalibratorSample& s_I2_diffI = samples_diffI[idx];
+        s_I2_diffI.Id -= s_I1.Id;
+        s_I2_diffI.Iq -= s_I1.Iq;
     }
 
     float sum_diff_Id = 0.0f;

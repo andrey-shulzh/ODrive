@@ -20,13 +20,13 @@ public:
 
     struct ProcessArgs
     {
-        uint32_t call_timestamp;
-        uint32_t current_meas_timestamp;
+        uint32_t update_timestamp;
+        uint32_t i_meas_timestamp;
 
         int32_t enc_count;
         uint32_t enc_time;
 
-        float phase;
+        float phase_dist;
 
         float Ialpha, Ibeta;
     };

@@ -89,7 +89,7 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
 
     auto [Vd, Vq] = *Vdq_setpoint_;
     float phase = *phase_;
-    //float phase_vel = *phase_vel_;
+    float phase_vel = *phase_vel_;
     float vbus_voltage = *vbus_voltage_measured_;
 
     std::optional<float2D> Idq;
@@ -97,8 +97,8 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
     // Park transform
     if (Ialpha_beta_measured_.has_value()) {
         auto [Ialpha, Ibeta] = *Ialpha_beta_measured_;
-        //float I_phase = phase + phase_vel * ((float)(int32_t)(i_timestamp_ - ctrl_timestamp_) / (float)TIM_1_8_CLOCK_HZ);
-        float I_phase = last_phase_;
+        float I_phase = phase + phase_vel * ((float)(int32_t)(i_timestamp_ - ctrl_timestamp_) / (float)TIM_1_8_CLOCK_HZ);
+        //float I_phase = last_phase_;
         float c_I = our_arm_cos_f32(I_phase);
         float s_I = our_arm_sin_f32(I_phase);
         Idq = {
@@ -164,8 +164,8 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
     curr_phase_ = phase;
 
     // Inverse park transform
-    //float pwm_phase = phase + phase_vel * ((float)(int32_t)(output_timestamp - ctrl_timestamp_) / (float)TIM_1_8_CLOCK_HZ);
-    float pwm_phase = curr_phase_;
+    float pwm_phase = phase + phase_vel * ((float)(int32_t)(output_timestamp - ctrl_timestamp_) / (float)TIM_1_8_CLOCK_HZ);
+    //float pwm_phase = curr_phase_;
     float c_p = our_arm_cos_f32(pwm_phase);
     float s_p = our_arm_sin_f32(pwm_phase);
     float mod_alpha = c_p * mod_d - s_p * mod_q;

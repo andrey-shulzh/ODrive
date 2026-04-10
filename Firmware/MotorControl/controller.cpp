@@ -151,7 +151,7 @@ bool Controller::update() {
 
     float Iq_set = 0.0f;
     float Id_set = 0.0f;
-#if 1
+#if 0 // breakout test
     const float I_break = 5.0f;
     const float I_limit = 10.0f;
 
@@ -219,6 +219,7 @@ bool Controller::update() {
     Idq_setpoint_ = {Id_set, Iq_set};
     Vdq_setpoint_ = {0.0f, 0.0f};
     return true;
+
 #if 0
     if (axis_->step_dir_active_) {
         if (config_.circular_setpoints) {
