@@ -151,9 +151,10 @@ bool Controller::update() {
 
     float Iq_set = 0.0f;
     float Id_set = 0.0f;
-#if 0 // breakout test
-    const float I_break = 5.0f;
-    const float I_limit = 10.0f;
+#if 1 // breakout test
+    const float I_break = 4.0f;
+    const float I_max = 8.0f;
+    const float I_limit = 20.0f;
 
     constexpr float sin_15 = 0.258819f;
     constexpr float rad_15 = 15 * (M_PI / 180.0f);
@@ -161,6 +162,17 @@ bool Controller::update() {
     const float center_enc_pos = axis_->calibrator_.center_enc_pos_;
     const float enc_from_center = curr_enc_pos - center_enc_pos;
     const float enc_15_delta = rad_15 * axis_->calibrator_.phase2enc_;
+    const float enc_90_delta = M_PI * 0.5f * axis_->calibrator_.phase2enc_;
+
+    const float enc_hi_lim = axis_->calibrator_.hi_enc_pos_;
+    const float enc_lo_lim = axis_->calibrator_.lo_enc_pos_;
+
+    const float enc_hi_max = enc_hi_lim - enc_90_delta;
+    const float enc_lo_max = enc_lo_lim + enc_90_delta;
+
+
+    const float hi_max_phase = axis_->calibrator_.enc2phase_ * phase_dir *
+        (enc_hi_max - float(axis_->encoder_.config_.phase_offset) - axis_->encoder_.config_.phase_offset_float);
 
     const float phase_from_center = enc_from_center * axis_->calibrator_.enc2phase_ * phase_dir;
     const float abs_phase_from_center = fabs(phase_from_center);
@@ -175,22 +187,34 @@ bool Controller::update() {
         out_phase = axis_->calibrator_.center_phase_;
     } else {
         // effect force curve
-        float Iq_effect;
-        if (phase_from_center >= rad_15) {
-            const float center_hi = center_enc_pos + enc_15_delta;
-            const float s = (curr_enc_pos - center_hi) / (axis_->calibrator_.hi_enc_pos_ - center_hi);
-            Iq_effect = -(I_break + s * (I_limit - I_break));
-        } else {
-            const float center_lo = center_enc_pos - enc_15_delta;
-            const float s = (curr_enc_pos - center_lo) / (axis_->calibrator_.lo_enc_pos_ - center_lo);
-            Iq_effect = +(I_break + s * (I_limit - I_break));
-        }
         Id_set = 0.0f;
-        Iq_set = Iq_effect;
+        Iq_set = 0.0f;
         out_phase = curr_phase;
+        if (enc_from_center >= enc_15_delta) {
+            if (curr_enc_pos <= enc_hi_max) {
+                const float center_hi = center_enc_pos + enc_15_delta;
+                const float s = (curr_enc_pos - center_hi) / (enc_hi_max - center_hi);
+                Iq_set = -(I_break + s * (I_max - I_break));
+            } else { // virtual stop
+                const float s = std::clamp((curr_enc_pos - enc_hi_max) / (enc_hi_lim - enc_hi_max), 0.0f, 1.0f);
+                //Iq_set = -(I_max + s * (I_limit - I_max));
+                Iq_set = -I_max * cosf(s * M_PI * 0.5f);
+                Id_set = I_limit * sinf(s * M_PI * 0.5f);
+                out_phase = hi_max_phase;
+            }
+        } else {
+            if (curr_enc_pos >= enc_lo_max) {
+                const float center_lo = center_enc_pos - enc_15_delta;
+                const float s = (curr_enc_pos - center_lo) / (enc_lo_max - center_lo);
+                Iq_set = +(I_break + s * (I_max - I_break));
+            } else { // virtual stop
+                const float s = std::clamp((curr_enc_pos - enc_lo_max) / (enc_lo_lim - enc_lo_max), 0.0f, 1.0f);
+                Iq_set = +(I_max + s * (I_limit - I_max));
+            }
+        }
         if (abs_phase_from_center < M_PI * 0.5f) {
             // should be smooth if Iq_effect(15 degree) starts from I_break!
-            const float I_center = fabs(Iq_effect) / sinf(abs_phase_from_center);
+            const float I_center = fabs(Iq_set) / sinf(abs_phase_from_center);
 
             // out_phase_from_center goes from 0 to 90 degree for phase_from_center from 15 to 90 degree
             constexpr float out_phase_scale = 90.0f / (90.0f - 15.0f);
@@ -202,13 +226,16 @@ bool Controller::update() {
             out_phase = axis_->calibrator_.center_phase_ + out_phase_from_center;
         }
     }
+    // offset
+    //Iq += config_.inertia;
+
     phase_ = wrap_pm_pi(out_phase);
     phase_vel_ = 0.0f;
 #else
     phase_ = *inp_phase;
     phase_vel_ = *inp_phase_vel;
 #endif
-#if 1
+#if 0
     if (config_.anticogging.anticogging_enabled) {
         // anti-cogging
         Iq_set += axis_->calibrator_.sample_I_cog_map(curr_enc_pos);

@@ -12,7 +12,7 @@
 
 
 #define DEBUG_LOG 1
-#define DEBUG_FAST_EXIT_NO_MAPS 0
+#define DEBUG_FAST_EXIT_NO_MAPS 1
 
 
 class MeasureCurrentUpdateHandler : public CalibratorUpdateHandler
@@ -797,8 +797,8 @@ bool Calibrator::run()
 
         center_phase_ = 0.0f;
         center_enc_pos_ = float(init_enc_count) + 0.5f;
-        lo_enc_pos_ = center_enc_pos_ - 1000;
-        hi_enc_pos_ = center_enc_pos_ + 1000;
+        lo_enc_pos_ = center_enc_pos_ - 2000;
+        hi_enc_pos_ = center_enc_pos_ + 2000;
         enc2phase_ = enc2phase;
         phase2enc_ = phase2enc;
 
