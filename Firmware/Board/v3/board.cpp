@@ -337,8 +337,8 @@ bool board_init() {
     HAL_NVIC_SetPriority(ControlLoop_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(ControlLoop_IRQn);
 
-    HAL_NVIC_SetPriority(TIM8_UP_TIM13_IRQn, 1, 0);
-    HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
+    //HAL_NVIC_SetPriority(TIM8_UP_TIM13_IRQn, 1, 0);
+    //HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
 
 #if ENC_TIME_FROM_TIMER
     MX_TIM7_Init();
@@ -431,33 +431,47 @@ void start_timers() {
         __HAL_ADC_CLEAR_FLAG(&hadc3, ADC_FLAG_OVR);
         
         __HAL_TIM_CLEAR_IT(&htim8, TIM_IT_UPDATE);
-        __HAL_TIM_ENABLE_IT(&htim8, TIM_IT_UPDATE);
+        //__HAL_TIM_ENABLE_IT(&htim8, TIM_IT_UPDATE);
     }
 }
+
+extern uint16_t adc2_regular_buffer[4];
+extern uint16_t adc3_regular_buffer[4];
+
+volatile bool adc_regular_ready = false;
 
 static bool fetch_and_reset_adcs(
         std::optional<Iph_ABC_t>* current0,
         std::optional<Iph_ABC_t>* current1) {
-    bool all_adcs_done = (ADC1->SR & ADC_SR_JEOC) == ADC_SR_JEOC
-        && (ADC2->SR & (ADC_SR_EOC | ADC_SR_JEOC)) == (ADC_SR_EOC | ADC_SR_JEOC)
-        && (ADC3->SR & (ADC_SR_EOC | ADC_SR_JEOC)) == (ADC_SR_EOC | ADC_SR_JEOC);
-    if (!all_adcs_done) {
+
+    bool injected_ready = (ADC1->SR & ADC_SR_JEOC) && 
+                         (ADC2->SR & ADC_SR_JEOC) && 
+                         (ADC3->SR & ADC_SR_JEOC);
+
+    if (!(injected_ready & adc_regular_ready)) {
         return false;
     }
 
     vbus_sense_adc_cb(ADC1->JDR1);
 
     if (m0_gate_driver.is_ready()) {
-        std::optional<float> phB = motors[0].phase_current_from_adcval(ADC2->JDR1);
-        std::optional<float> phC = motors[0].phase_current_from_adcval(ADC3->JDR1);
+        uint32_t adc2_sum = uint32_t(ADC2->JDR1 + ADC2->JDR2 + ADC2->JDR3 + ADC2->JDR4);
+        uint32_t adc3_sum = uint32_t(ADC3->JDR1 + ADC3->JDR2 + ADC3->JDR3 + ADC3->JDR4);
+
+        std::optional<float> phB = motors[0].phase_current_from_adcval(float(adc2_sum) * 0.25f);
+        std::optional<float> phC = motors[0].phase_current_from_adcval(float(adc3_sum) * 0.25f);
         if (phB.has_value() && phC.has_value()) {
             *current0 = {-*phB - *phC, *phB, *phC};
         }
     }
 
     if (m1_gate_driver.is_ready()) {
-        std::optional<float> phB = motors[1].phase_current_from_adcval(ADC2->DR);
-        std::optional<float> phC = motors[1].phase_current_from_adcval(ADC3->DR);
+        // adc values are from 0 to 4095, so it's safe to add uint16_t 4 times without overflow
+        uint32_t adc2_sum = uint32_t(adc2_regular_buffer[0] + adc2_regular_buffer[1] + adc2_regular_buffer[2] + adc2_regular_buffer[3]);
+        uint32_t adc3_sum = uint32_t(adc3_regular_buffer[0] + adc3_regular_buffer[1] + adc3_regular_buffer[2] + adc3_regular_buffer[3]);
+        
+        std::optional<float> phB = motors[1].phase_current_from_adcval(float(adc2_sum) * 0.25f);
+        std::optional<float> phC = motors[1].phase_current_from_adcval(float(adc3_sum) * 0.25f);
         if (phB.has_value() && phC.has_value()) {
             *current1 = {-*phB - *phC, *phB, *phC};
         }
@@ -467,6 +481,7 @@ static bool fetch_and_reset_adcs(
     ADC2->SR = ~(ADC_SR_EOC | ADC_SR_JEOC | ADC_SR_OVR);
     ADC3->SR = ~(ADC_SR_EOC | ADC_SR_JEOC | ADC_SR_OVR);
 
+    adc_regular_ready = false;
     return true;
 }
 
@@ -516,9 +531,9 @@ void TIM7_IRQHandler(void) {
 
 volatile uint32_t timestamp_ = 0;
 volatile bool counting_down_ = false;
-volatile bool is_first_irq = true;
 volatile int32_t irq_time_deviation = 0;
 
+#if 0
 void TIM8_UP_TIM13_IRQHandler(void) {
     const uint32_t entry_time = DWT->CYCCNT;
 
@@ -569,6 +584,113 @@ void TIM8_UP_TIM13_IRQHandler(void) {
             TIM_1_8_PERIOD_CLOCKS / 2;
     }
 }
+#endif
+
+volatile uint32_t debug_dma1_irq_count = 0;
+volatile uint32_t debug_dma2_irq_count = 0;
+volatile uint32_t debug_dma_ready_count = 0;
+
+volatile bool adc2_dma_ready = false;
+volatile bool adc3_dma_ready = false;
+
+void ADC_DMA_ReadyHandler(void) {
+    adc_regular_ready = true;
+    ++debug_dma_ready_count;
+
+    // If the corresponding timer is counting up, we just sampled in SVM vector 0, i.e. real current
+    // If we are counting down, we just sampled in SVM vector 7, with zero current
+    bool counting_down = TIM8->CR1 & TIM_CR1_DIR;
+
+    bool timer_update_missed = (counting_down_ == counting_down);
+    if (timer_update_missed) {
+        motors[0].disarm_with_error(Motor::ERROR_TIMER_UPDATE_MISSED);
+        motors[1].disarm_with_error(Motor::ERROR_TIMER_UPDATE_MISSED);
+        return;
+    }
+    counting_down_ = counting_down;
+
+    timestamp_ += TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1);
+
+    static bool _is_first_call = true;
+    if (_is_first_call) {
+        _is_first_call = false;
+        // sync DWT->CYCCNT
+        uint32_t prim = cpu_enter_critical();
+        const uint32_t timer_count = uint32_t(TIM8->CNT);
+        const uint32_t cycles_since_update = counting_down ? (TIM_1_8_PERIOD_CLOCKS - timer_count) : timer_count;
+        DWT->CYCCNT = timestamp_ + cycles_since_update + 20;
+        cpu_exit_critical(prim);
+    }
+    else
+    {
+        uint32_t prim = cpu_enter_critical();
+        const uint32_t cpu_count = DWT->CYCCNT;
+        const uint32_t timer_count = uint32_t(TIM8->CNT);
+        cpu_exit_critical(prim);
+
+        const uint32_t cycles_since_update = counting_down ? (TIM_1_8_PERIOD_CLOCKS - timer_count) : timer_count;
+        irq_time_deviation = int32_t(cpu_count - (timestamp_ + cycles_since_update));
+    }
+
+    if (!counting_down) {
+        TaskTimer::enabled = odrv.task_timers_armed_;
+        // Run sampling handlers and kick off control tasks when TIM8 is
+        // counting up.
+        odrv.sampling_cb();
+        NVIC->STIR = ControlLoop_IRQn;
+    } else {
+        // Tentatively reset all PWM outputs to 50% duty cycles. If the control
+        // loop handler finishes in time then these values will be overridden
+        // before they go into effect.
+        TIM1->CCR1 =
+        TIM1->CCR2 =
+        TIM1->CCR3 =
+        TIM8->CCR1 =
+        TIM8->CCR2 =
+        TIM8->CCR3 =
+            TIM_1_8_PERIOD_CLOCKS / 2;
+    }
+}
+
+void DMA2_Stream1_IRQHandler(void) {
+    // ADC3
+    uint32_t lisr = DMA2->LISR;
+    // clear all Stream1 flags!
+    DMA2->LIFCR = DMA_LIFCR_CTCIF1 | DMA_LIFCR_CHTIF1 | DMA_LIFCR_CTEIF1 | DMA_LIFCR_CDMEIF1 | DMA_LIFCR_CFEIF1;
+
+    ++debug_dma1_irq_count;
+    if (lisr & DMA_LISR_TCIF1) {
+        adc3_dma_ready = true;
+    } else {
+        motors[0].disarm_with_error(Motor::ERROR_SYSTEM_LEVEL);
+        motors[1].disarm_with_error(Motor::ERROR_SYSTEM_LEVEL);
+        return;
+    }
+    if (adc2_dma_ready & adc3_dma_ready) {
+        adc2_dma_ready = adc3_dma_ready = false;
+        ADC_DMA_ReadyHandler();
+    }
+}
+
+void DMA2_Stream2_IRQHandler(void) {
+    // ADC2
+    uint32_t lisr = DMA2->LISR;
+    // clear all Stream2 flags!
+    DMA2->LIFCR = DMA_LIFCR_CTCIF2 | DMA_LIFCR_CHTIF2 | DMA_LIFCR_CTEIF2 | DMA_LIFCR_CDMEIF2 | DMA_LIFCR_CFEIF2;
+
+    ++debug_dma2_irq_count;
+    if (lisr & DMA_LISR_TCIF2) {
+        adc2_dma_ready = true;
+    } else {
+        motors[0].disarm_with_error(Motor::ERROR_SYSTEM_LEVEL);
+        motors[1].disarm_with_error(Motor::ERROR_SYSTEM_LEVEL);
+        return;
+    }
+    if (adc2_dma_ready & adc3_dma_ready) {
+        adc2_dma_ready = adc3_dma_ready = false;
+        ADC_DMA_ReadyHandler();
+    }
+}
 
 void ControlLoop_IRQHandler(void) {
     COUNT_IRQ(ControlLoop_IRQn);
@@ -603,7 +725,7 @@ void ControlLoop_IRQHandler(void) {
     // By this time the ADCs for both M0 and M1 should have fired again. But
     // let's wait for them just to be sure.
     MEASURE_TIME(odrv.task_times_.dc_calib_wait) {
-        while (!(ADC2->SR & ADC_SR_EOC));
+        while (!adc_regular_ready);
     }
 
     if (!fetch_and_reset_adcs(&current0, &current1)) {

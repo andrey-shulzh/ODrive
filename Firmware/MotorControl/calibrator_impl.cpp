@@ -8,6 +8,7 @@
 constexpr uint32_t MAX_CCMRAM = (65536 - configTOTAL_HEAP_SIZE);
 static_assert(CALIB_MAX_SAMPLES * 2 * sizeof(CalibratorSample) <= MAX_CCMRAM);
 
+#if CALIB_ALLOC_SAMPLES
 __attribute__((section(".ccmram")))
 static CalibratorSample calib_samples_1[CALIB_MAX_SAMPLES];
 
@@ -16,7 +17,19 @@ static CalibratorSample calib_samples_2[CALIB_MAX_SAMPLES];
 
 CalibratorSample* CalibratorImpl::getSamples1() { return calib_samples_1; }
 CalibratorSample* CalibratorImpl::getSamples2() { return calib_samples_2; }
+#else
+CalibratorSample* CalibratorImpl::getSamples1() { return nullptr; }
+CalibratorSample* CalibratorImpl::getSamples2() { return nullptr; }
+#endif
 
+#if CALIB_RECCORD_I
+static_assert(CALIB_MAX_I_SAMPLES * sizeof(CalibratorSample) <= MAX_CCMRAM);
+
+__attribute__((section(".ccmram")))
+static CalibratorSample calib_I_samples[CALIB_MAX_I_SAMPLES];
+
+CalibratorSample* CalibratorImpl::getISamples() { return calib_I_samples; }
+#endif
 
 CalibratorUpdateHandler CalibratorImpl::empty_update_handler_;
 
@@ -52,6 +65,24 @@ bool CalibratorImpl::update(uint32_t i_meas_timestamp, uint32_t ctrl_timestamp)
     const Iph_ABC_t Iph_ofs1 = axis_->motor_.prev_ofs_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
     const Iph_ABC_t Iph_ofs2 = axis_->motor_.last_ofs_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
     const Iph_ABC_t Iph_raw = axis_->motor_.last_raw_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
+
+    const Iph_ABC_t Iph_meas = axis_->motor_.current_meas_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
+#if CALIB_RECCORD_I
+    if (enable_reccord_I_ && reccord_I_idx_ < CALIB_MAX_I_SAMPLES) {
+        auto& s = calib_I_samples[reccord_I_idx_++];
+        // Ialpha_raw
+        s.Id = Iph_raw.phB - 0.5f * (Iph_ofs1.phB + Iph_ofs2.phB);
+        // Ialpha_ofs
+        s.Iq = Iph_meas.phB;
+    }
+    if (enable_reccord_I_x3_ && reccord_I_idx_ < CALIB_MAX_I_SAMPLES) {
+        auto& s = calib_I_samples[reccord_I_idx_++];
+        // Ialpha_raw
+        s.Id = Iph_raw.phC - 0.5f * (Iph_ofs1.phC + Iph_ofs2.phC);
+        // Ialpha_ofs
+        s.Iq = Iph_meas.phC;
+    }
+#endif
 
     // Iph_raw should be measured right in the middle between Iph_ofs1 & Iph_ofs2!
     const float I_phB = Iph_raw.phB - 0.5f * (Iph_ofs1.phB + Iph_ofs2.phB);

@@ -394,17 +394,17 @@ float Motor::max_available_torque() {
     }
 }
 
-std::optional<float> Motor::phase_current_from_adcval(uint32_t ADCValue) {
-    // Make sure the measurements don't come too close to the current sensor's hardware limitations
-    if (ADCValue < CURRENT_ADC_LOWER_BOUND || ADCValue > CURRENT_ADC_UPPER_BOUND) {
-        error_ |= ERROR_CURRENT_SENSE_SATURATION;
-        return std::nullopt;
-    }
+std::optional<float> Motor::phase_current_from_adcval(float ADCValue) {
+    // 1. Check bounds using the raw float value
 
-    int adcval_bal = (int)ADCValue - (1 << 11);
-    float amp_out_volt = (3.3f / (float)(1 << 12)) * (float)adcval_bal;
-    float shunt_volt = amp_out_volt * phase_current_rev_gain_;
-    float current = shunt_volt * shunt_conductance_;
+    //if (ADCValue < (float)CURRENT_ADC_LOWER_BOUND || ADCValue > (float)CURRENT_ADC_UPPER_BOUND) {
+    //    error_ |= ERROR_CURRENT_SENSE_SATURATION;
+    //    return std::nullopt;
+    //}
+
+    float adcval_bal = ADCValue - 2048.0f;
+    float amp_out_volt = (3.3f / 4096.0f) * adcval_bal;
+    float current = amp_out_volt * phase_current_rev_gain_ * shunt_conductance_;
     return current;
 }
 
