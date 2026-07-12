@@ -585,20 +585,46 @@ static void rtos_main(void*) {
     }
 
     odrv.system_stats_.fully_booted = true;
-#if 0
+#if 1
     extern volatile int32_t irq_time_deviation;
+    extern volatile uint32_t debug_dma1_irq_count;
+    extern volatile uint32_t debug_dma2_irq_count;
+    extern volatile uint32_t debug_dma_ready_count;
+
     for (;;) {
-        printf("%d\n", irq_time_deviation);
-        osDelay(200);
+        printf("%d, %u, %u, %u\n", irq_time_deviation, debug_dma1_irq_count, debug_dma2_irq_count, debug_dma_ready_count);
+        osDelay(250);
     }
 #endif
 #if 0
+    extern uint16_t adc2_regular_buffer[4];
+    extern uint16_t adc3_regular_buffer[4];
+
     for (;;) {
-        printf("M0: %.4f, %.4f | M1: %.4f, %.4f\r\n",
-                sqrtf(axes[0].motor_.calib_variance.phB), sqrtf(axes[0].motor_.calib_variance.phC),
-                sqrtf(axes[1].motor_.calib_variance.phB), sqrtf(axes[1].motor_.calib_variance.phC)
+        printf("ADC2: %04x, %04x, %04x, %04x  ADC3: %04x, %04x, %04x, %04x\n",
+            uint32_t(adc2_regular_buffer[0]), uint32_t(adc2_regular_buffer[1]), uint32_t(adc2_regular_buffer[2]), uint32_t(adc2_regular_buffer[3]),
+            uint32_t(adc3_regular_buffer[0]), uint32_t(adc3_regular_buffer[1]), uint32_t(adc3_regular_buffer[2]), uint32_t(adc3_regular_buffer[3])
         );
         osDelay(500);
+    }
+#endif
+#if 0
+    extern volatile int32_t last_ADC2_JDR1;
+    extern volatile int32_t last_ADC2_JDR2;
+    extern volatile int32_t last_ADC2_JDR3;
+
+    extern volatile int32_t last_ADC3_JDR1;
+    extern volatile int32_t last_ADC3_JDR2;
+    extern volatile int32_t last_ADC3_JDR3;
+
+    for (;;) {
+        printf("ADC2: %d, %d, %d | ADC3: %d, %d, %d\n",
+            last_ADC2_JDR1, last_ADC2_JDR2, last_ADC2_JDR3,
+            last_ADC3_JDR1, last_ADC3_JDR2, last_ADC3_JDR3);
+        //auto mI = axes[0].motor_.last_raw_current_.value_or(Iph_ABC_t{-100.0f, -100.0f, -100.0f});
+        //auto mI_x3 = axes[0].motor_.last_raw_current_x3_.value_or(Iph_ABC_t{-100.0f, -100.0f, -100.0f});
+        //printf("mI: %.4f, %.4f | mI_x3: %.4f, %.4f\r\n", mI.phB, mI.phC, mI_x3.phB, mI_x3.phC);
+        osDelay(250);
     }
 #endif
 #if 0

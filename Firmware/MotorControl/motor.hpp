@@ -79,7 +79,7 @@ public:
     bool do_checks(uint32_t timestamp);
     float effective_current_lim();
     float max_available_torque();
-    std::optional<float> phase_current_from_adcval(uint32_t ADCValue);
+    std::optional<float> phase_current_from_adcval(float ADCValue);
     bool measure_phase_resistance(float test_current, float max_voltage);
     bool measure_phase_inductance(float test_voltage);
     bool run_calibration();

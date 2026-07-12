@@ -690,6 +690,118 @@ bool Calibrator::run()
     // START!!!
     impl_.initMotor();
 
+#if 0
+    {
+        CalibratorImpl::ControlParams ctrl_params{};
+        ctrl_params.voltage_value_and_time = std::make_pair(config_.start_lock_voltage, 1.0f);
+        CRITICAL_SECTION() {
+            impl_.setControlParams(ctrl_params);
+        }
+        if (!runMotorForTime(5.0f)) {
+            return false;
+        }
+    }
+    {
+        CalibratorImpl::ControlParams ctrl_params{};
+        ctrl_params.phase_vel = config_.record_phase_speed;
+        CRITICAL_SECTION() {
+            impl_.setControlParams(ctrl_params);
+        }
+        if (!runMotorForTime(5.0f)) {
+            return false;
+        }
+    }
+
+    CRITICAL_SECTION() {
+        impl_.reccord_I_idx_ = 0;
+        impl_.enable_reccord_I_ = true;
+    }
+    if (!runMotorForTime(2.0f)) {
+        return false;
+    }
+    CRITICAL_SECTION() {
+        impl_.enable_reccord_I_ = false;
+    }
+
+    impl_.shutdownMotor();
+
+    {
+        const CalibratorSample* rec_I_samples = CalibratorImpl::getISamples();
+        printf("~~~samples_I~~~\n");
+        osDelay(5);
+        printf("idx,Iraw,Iofs\n");
+        osDelay(5);
+        for (uint32_t idx = 0; idx < impl_.reccord_I_idx_; ++idx)
+        {
+            const auto& s = rec_I_samples[idx];
+            printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+            osDelay(5);
+        }
+        osDelay(100);
+    }
+    return false;
+#endif
+#if CALIB_RECCORD_I
+    if (!runMotorForTime(5.0f)) {
+        return false;
+    }
+    CRITICAL_SECTION() {
+        impl_.reccord_I_idx_ = 0;
+        impl_.enable_reccord_I_ = true;
+    }
+    if (!runMotorForTime(2.0f)) {
+        return false;
+    }
+    CRITICAL_SECTION() {
+        impl_.enable_reccord_I_ = false;
+    }
+
+    {
+        const CalibratorSample* rec_I_samples = CalibratorImpl::getISamples();
+        printf("~~~samples_I~~~\n");
+        osDelay(5);
+        printf("idx,Iraw,Iofs\n");
+        osDelay(5);
+        for (uint32_t idx = 0; idx < impl_.reccord_I_idx_; ++idx)
+        {
+            const auto& s = rec_I_samples[idx];
+            printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+            osDelay(5);
+        }
+        osDelay(100);
+    }
+
+    CRITICAL_SECTION() {
+        impl_.reccord_I_idx_ = 0;
+        impl_.enable_reccord_I_x3_ = true;
+    }
+    if (!runMotorForTime(2.0f)) {
+        return false;
+    }
+    CRITICAL_SECTION() {
+        impl_.enable_reccord_I_x3_ = false;
+    }
+
+    impl_.shutdownMotor();
+
+    {
+        const CalibratorSample* rec_I_samples = CalibratorImpl::getISamples();
+        printf("~~~samples_I_x3~~~\n");
+        osDelay(5);
+        printf("idx,Iraw,Iofs\n");
+        osDelay(5);
+        for (uint32_t idx = 0; idx < impl_.reccord_I_idx_; ++idx)
+        {
+            const auto& s = rec_I_samples[idx];
+            printf("%d, %f, %f\n", idx, s.Id, s.Iq);
+            osDelay(5);
+        }
+        osDelay(100);
+    }
+
+    return false;
+#endif
+
     // go to start position for start_lock_settle_duration
     {
         CalibratorImpl::ControlParams ctrl_params{};

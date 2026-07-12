@@ -71,7 +71,7 @@ void MX_TIM7_Init(void) {
     htim7.Init.Prescaler = 0;
     htim7.Init.CounterMode = TIM_COUNTERMODE_UP;
     htim7.Init.Period = (uint32_t)(TIM_APB1_CLOCK_HZ / 400000) - 1; // 400 kHz
-    htim13.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+    htim7.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     if (HAL_TIM_Base_Init(&htim7) != HAL_OK)
     {
       _Error_Handler(__FILE__, __LINE__);

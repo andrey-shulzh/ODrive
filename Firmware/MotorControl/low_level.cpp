@@ -137,6 +137,11 @@ void safety_critical_apply_brake_resistor_timings(uint32_t low_off, uint32_t hig
 
 /* Function implementations --------------------------------------------------*/
 
+
+// buffers for DMA should not cross 1 kb boundary, so full size alignement is required
+uint16_t adc2_regular_buffer[4] __attribute__((aligned(8)));
+uint16_t adc3_regular_buffer[4] __attribute__((aligned(8)));
+
 void start_adc_pwm() {
     // Disarm motors
     for (auto& axis: axes) {
@@ -161,8 +166,10 @@ void start_adc_pwm() {
 
     // Enable ADC and interrupts
     __HAL_ADC_ENABLE(&hadc1);
-    __HAL_ADC_ENABLE(&hadc2);
-    __HAL_ADC_ENABLE(&hadc3);
+
+    HAL_ADC_Start_DMA(&hadc2, reinterpret_cast<uint32_t*>(adc2_regular_buffer), 4);
+    HAL_ADC_Start_DMA(&hadc3, reinterpret_cast<uint32_t*>(adc3_regular_buffer), 4);
+
     // Warp field stabilize.
     osDelay(2);
 

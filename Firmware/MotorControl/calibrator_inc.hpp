@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+
+#define CALIB_ALLOC_SAMPLES 0
+#define CALIB_RECCORD_I 1
+
 constexpr uint32_t CALIB_MAX_ENC_CPR = 20480;
 constexpr uint32_t CALIB_MIN_SAMPLE_SIZE = 5;
 constexpr uint32_t CALIB_MAX_RANGE_DEG = 130;
@@ -11,6 +15,9 @@ constexpr uint32_t CALIB_MAX_SAMPLES = (CALIB_MAX_ENC_CPR * CALIB_MAX_RANGE_DEG 
 
 struct CalibratorSample { float Id, Iq; };
 
+#if CALIB_RECCORD_I
+constexpr uint32_t CALIB_MAX_I_SAMPLES = 4096;
+#endif 
 
 class CalibratorUpdateHandler
 {
