@@ -1,6 +1,7 @@
 
 #include "interface_usb.h"
 #include "ascii_protocol.hpp"
+#include "custom_protocol.hpp"
 
 #include <MotorControl/utils.hpp>
 
@@ -144,6 +145,8 @@ Stm32UsbTxStream usb_cdc_tx_stream(CDC_IN_EP);
 Stm32UsbTxStream usb_native_tx_stream(ODRIVE_IN_EP);
 Stm32UsbRxStream usb_cdc_rx_stream(CDC_OUT_EP);
 Stm32UsbRxStream usb_native_rx_stream(ODRIVE_OUT_EP);
+Stm32UsbTxStream usb_custom_tx_stream(CUSTOM_IN_EP);
+Stm32UsbRxStream usb_custom_rx_stream(CUSTOM_OUT_EP);
 
 LegacyProtocolStreamBased fibre_over_cdc(&usb_cdc_rx_stream, &usb_cdc_tx_stream);
 LegacyProtocolPacketBased fibre_over_usb(&usb_native_rx_stream, &usb_native_tx_stream, USB_TX_DATA_SIZE - 1); // See note on MTU above
@@ -151,6 +154,7 @@ LegacyProtocolPacketBased fibre_over_usb(&usb_native_rx_stream, &usb_native_tx_s
 fibre::AsyncStreamSinkMultiplexer<2> usb_cdc_tx_multiplexer(usb_cdc_tx_stream);
 fibre::BufferedStreamSink<64> usb_cdc_stdout_sink(usb_cdc_tx_multiplexer); // Used in communication.cpp
 AsciiProtocol ascii_over_cdc(&usb_cdc_rx_stream, &usb_cdc_tx_multiplexer);
+CustomProtocol custom_over_usb(&usb_custom_rx_stream, &usb_custom_tx_stream);
 
 bool usb_cdc_stdout_pending = false;
 
@@ -158,7 +162,12 @@ static void usb_server_thread(void * ctx) {
     (void) ctx;
  
     for (;;) {
-        osEvent event = osMessageGet(usb_event_queue, osWaitForever);
+        osEvent event = osMessageGet(usb_event_queue, 1000);
+
+        if (event.status == osEventTimeout) {
+            custom_proto_debug_tick(); // temporary diagnostic
+            continue;
+        }
 
         if (event.status != osEventMessage) {
             continue;
@@ -172,8 +181,11 @@ static void usb_server_thread(void * ctx) {
                 usb_native_tx_stream.connected_ = true;
                 usb_cdc_rx_stream.connected_ = true;
                 usb_native_rx_stream.connected_ = true;
+                usb_custom_tx_stream.connected_ = true;
+                usb_custom_rx_stream.connected_ = true;
 
                 fibre_over_usb.start({});
+                custom_over_usb.start();
 
                 if (odrv.config_.usb_cdc_protocol == ODrive::STREAM_PROTOCOL_TYPE_FIBRE) {
                     fibre_over_cdc.start({});
@@ -188,10 +200,14 @@ static void usb_server_thread(void * ctx) {
                 usb_native_tx_stream.connected_ = false;
                 usb_cdc_rx_stream.connected_ = false;
                 usb_native_rx_stream.connected_ = false;
+                usb_custom_tx_stream.connected_ = false;
+                usb_custom_rx_stream.connected_ = false;
                 usb_cdc_tx_stream.did_finish();
                 usb_native_tx_stream.did_finish();
                 usb_cdc_rx_stream.did_finish();
                 usb_native_rx_stream.did_finish();
+                usb_custom_tx_stream.did_finish();
+                usb_custom_rx_stream.did_finish();
             } break;
 
             case 3: { // TX on CDC interface done
@@ -214,6 +230,14 @@ static void usb_server_thread(void * ctx) {
                 usb_cdc_stdout_pending = false;
                 usb_cdc_stdout_sink.maybe_start_async_write();
             } break;
+
+            case 8: { // TX on custom interface done
+                usb_custom_tx_stream.did_finish();
+            } break;
+
+            case 9: { // RX on custom interface done
+                usb_custom_rx_stream.did_finish();
+            } break;
         }
     }
 }
@@ -221,12 +245,18 @@ static void usb_server_thread(void * ctx) {
 // Called from CDC_Receive_FS callback function, this allows the communication
 // thread to handle the incoming data
 void usb_rx_process_packet(uint8_t *buf, uint32_t len, uint8_t endpoint_pair) {
+    if (endpoint_pair == CUSTOM_OUT_EP) {
+        custom_proto_dbg_isr++; // temporary diagnostic
+    }
     if (endpoint_pair == CDC_OUT_EP && usb_cdc_rx_stream.rx_end_) {
         usb_cdc_rx_stream.rx_end_ += len;
         osMessagePut(usb_event_queue, 5, 0);
     } else if (endpoint_pair == ODRIVE_OUT_EP && usb_native_rx_stream.rx_end_) {
         usb_native_rx_stream.rx_end_ += len;
         osMessagePut(usb_event_queue, 6, 0);
+    } else if (endpoint_pair == CUSTOM_OUT_EP && usb_custom_rx_stream.rx_end_) {
+        usb_custom_rx_stream.rx_end_ += len;
+        osMessagePut(usb_event_queue, 9, 0);
     }
 }
 

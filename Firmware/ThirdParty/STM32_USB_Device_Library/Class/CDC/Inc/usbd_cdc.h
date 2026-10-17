@@ -43,9 +43,11 @@ extern "C" {
   */
 #define CDC_IN_EP                                   0x81U  /* EP1 for data IN */
 #define CDC_OUT_EP                                  0x01U  /* EP1 for data OUT */
-#define CDC_CMD_EP                                  0x82U  /* EP2 for CDC commands */
+//#define CDC_CMD_EP                                  0x82U  /* EP2 for CDC commands (unused, kept for reference) */
 #define ODRIVE_IN_EP                                0x83  /* EP3 IN: ODrive device TX endpoint */
 #define ODRIVE_OUT_EP                               0x03  /* EP3 OUT: ODrive device RX endpoint */
+#define CUSTOM_IN_EP                                0x82U  /* EP2 IN: custom command/telemetry TX endpoint */
+#define CUSTOM_OUT_EP                               0x02U  /* EP2 OUT: custom command/telemetry RX endpoint */
 
 #ifndef CDC_HS_BINTERVAL
 #define CDC_HS_BINTERVAL                            0x10U
@@ -60,7 +62,7 @@ extern "C" {
 #define CDC_DATA_FS_MAX_PACKET_SIZE                 64U  /* Endpoint IN & OUT Packet size */
 #define CDC_CMD_PACKET_SIZE                         8U  /* Control Endpoint Packet size */
 
-#define USB_CDC_CONFIG_DESC_SIZ                     (67 + 39)
+#define USB_CDC_CONFIG_DESC_SIZ                     (130)
 #define CDC_DATA_HS_IN_PACKET_SIZE                  CDC_DATA_HS_MAX_PACKET_SIZE
 #define CDC_DATA_HS_OUT_PACKET_SIZE                 CDC_DATA_HS_MAX_PACKET_SIZE
 
@@ -128,6 +130,9 @@ typedef struct
 
   USBD_CDC_EP_HandleTypeDef ODRIVE_Tx;
   USBD_CDC_EP_HandleTypeDef ODRIVE_Rx;
+
+  USBD_CDC_EP_HandleTypeDef CUSTOM_Tx;
+  USBD_CDC_EP_HandleTypeDef CUSTOM_Rx;
 
 } USBD_CDC_HandleTypeDef;
 

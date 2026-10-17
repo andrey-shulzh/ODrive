@@ -98,6 +98,7 @@ odrive_firmware_pkg = {
         'communication/can/odrive_can.cpp',    
         'communication/communication.cpp',
         'communication/ascii_protocol.cpp',
+        'communication/custom_protocol.cpp',
         'communication/interface_uart.cpp',
         'communication/interface_usb.cpp',
         'communication/interface_i2c.cpp',

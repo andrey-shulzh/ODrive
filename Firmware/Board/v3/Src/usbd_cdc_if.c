@@ -310,12 +310,17 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len, uint8_t endpoint_pair)
 
   USBD_CDC_HandleTypeDef* hcdc = (USBD_CDC_HandleTypeDef*) hUsbDeviceFS.pClassData;
 
+  if (hcdc == NULL)
+    return USBD_FAIL;
+
   // Select EP
   USBD_CDC_EP_HandleTypeDef* hEP_Tx;
   if (endpoint_pair == CDC_IN_EP) {
     hEP_Tx = &hcdc->CDC_Tx;
   } else if (endpoint_pair == ODRIVE_IN_EP) {
     hEP_Tx = &hcdc->ODRIVE_Tx;
+  } else if (endpoint_pair == CUSTOM_IN_EP) {
+    hEP_Tx = &hcdc->CUSTOM_Tx;
   } else {
     return USBD_FAIL;
   }
