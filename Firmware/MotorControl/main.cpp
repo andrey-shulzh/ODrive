@@ -585,7 +585,7 @@ static void rtos_main(void*) {
     }
 
     odrv.system_stats_.fully_booted = true;
-#if 1
+#if 0
     extern volatile int32_t irq_time_deviation;
     extern volatile uint32_t debug_dma1_irq_count;
     extern volatile uint32_t debug_dma2_irq_count;
