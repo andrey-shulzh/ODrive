@@ -6,6 +6,8 @@
 
 #include <algorithm>
 
+static constexpr uint32_t DC_CALIB_BIAS_SAMPLES = 1024;
+
 static constexpr auto CURRENT_ADC_LOWER_BOUND =        (uint32_t)((float)(1 << 12) * CURRENT_SENSE_MIN_VOLT / 3.3f);
 static constexpr auto CURRENT_ADC_UPPER_BOUND =        (uint32_t)((float)(1 << 12) * CURRENT_SENSE_MAX_VOLT / 3.3f);
 
@@ -205,6 +207,12 @@ bool Motor::arm(PhaseControlLaw<3>* control_law) {
             control_law_->reset();
         }
 
+        // The residual between the raw current zero-point and the interpolated
+        // "ofs" reference is re-measured at the start of every arming sequence.
+        dc_calib_bias_.reset();
+        dc_calib_bias_sum_ = {0.0f, 0.0f, 0.0f};
+        dc_calib_bias_count_ = 0;
+
         if (!odrv.config_.enable_brake_resistor || brake_resistor_armed) {
             armed_state_ = 1;
             is_armed_ = true;
@@ -213,6 +221,22 @@ bool Motor::arm(PhaseControlLaw<3>* control_law) {
         }
     }
 
+    if (is_armed_) {
+        // Wait for the bias to be measured. The control loop accumulates samples
+        // while the motor is at zero current and the PWM outputs start switching.
+        // Bail out early if the motor gets disarmed.
+        for (size_t i = 0; i < 200 && is_armed_ && dc_calib_bias_count_ < DC_CALIB_BIAS_SAMPLES; ++i) {
+            osDelay(1);
+        }
+
+        CRITICAL_SECTION() {
+            const float inv_count = 1.0f / float(dc_calib_bias_count_);
+            float avg_phA = dc_calib_bias_sum_.phA * inv_count;
+            float avg_phB = dc_calib_bias_sum_.phB * inv_count;
+            float avg_phC = dc_calib_bias_sum_.phC * inv_count;
+            dc_calib_bias_ = {avg_phA, avg_phB, avg_phC};
+        }
+    }
     return true;
 }
 
@@ -613,17 +637,15 @@ void Motor::current_meas_cb(uint32_t timestamp, std::optional<Iph_ABC_t> current
                        && (abs(DC_calib_.phB) < max_dc_calib_)
                        && (abs(DC_calib_.phC) < max_dc_calib_);
 
-    if (armed_state_ == 1 || armed_state_ == 2) {
-        current_meas_ = {0.0f, 0.0f, 0.0f};
-        armed_state_ += 1;
-    } else if (current.has_value() && dc_calib_valid) {
+    current_meas_.reset();
+    if (current.has_value() && dc_calib_valid && dc_calib_bias_.has_value()) {
         current_meas_ = {
-            current->phA - DC_calib_.phA,
-            current->phB - DC_calib_.phB,
-            current->phC - DC_calib_.phC
+            current->phA - DC_calib_.phA - dc_calib_bias_->phA,
+            current->phB - DC_calib_.phB - dc_calib_bias_->phB,
+            current->phC - DC_calib_.phC - dc_calib_bias_->phC
         };
-    } else {
-        current_meas_ = std::nullopt;
+    } else if (is_armed_ && !dc_calib_bias_.has_value()) {
+        current_meas_ = {0.0f, 0.0f, 0.0f};
     }
 
     // Run system-level checks (e.g. overvoltage/undervoltage condition)
@@ -674,6 +696,14 @@ void Motor::dc_calib_cb(uint32_t timestamp, std::optional<Iph_ABC_t> current) {
 
     const float dc_calib_period = static_cast<float>(2 * TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1)) / TIM_1_8_CLOCK_HZ;
     TaskTimerContext tmr{axis_->task_times_.dc_calib};
+
+    if (!dc_calib_bias_.has_value() && is_armed_ && last_raw_current_.has_value()
+        && prev_ofs_current_.has_value() && last_ofs_current_.has_value()) {
+        dc_calib_bias_sum_.phA += last_raw_current_->phA - 0.5f * (prev_ofs_current_->phA + last_ofs_current_->phA);
+        dc_calib_bias_sum_.phB += last_raw_current_->phB - 0.5f * (prev_ofs_current_->phB + last_ofs_current_->phB);
+        dc_calib_bias_sum_.phC += last_raw_current_->phC - 0.5f * (prev_ofs_current_->phC + last_ofs_current_->phC);
+        ++dc_calib_bias_count_;
+    }
 
     if (current.has_value()) {
         const float calib_filter_k = std::min(dc_calib_period / config_.dc_calib_tau, 1.0f);

@@ -11,7 +11,7 @@ const SPI_InitTypeDef Drv8301::spi_config_ = {
     .CLKPolarity = SPI_POLARITY_LOW,
     .CLKPhase = SPI_PHASE_2EDGE,
     .NSS = SPI_NSS_SOFT,
-    .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16,
+    .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8,
     .FirstBit = SPI_FIRSTBIT_MSB,
     .TIMode = SPI_TIMODE_DISABLE,
     .CRCCalculation = SPI_CRCCALCULATION_DISABLE,
@@ -174,4 +174,39 @@ bool Drv8301::write_reg(const RegName_e regName, const uint16_t data) {
     delay_us(1);
 
     return true;
+}
+
+void Drv8301::set_dc_calibration(bool enabled) {
+    if (!is_ready()) {
+        return;
+    }
+
+    // Do not overwrite a command that DMA is still reading.
+    if (!Stm32SpiArbiter::acquire_task(&dc_calibration_task_)) {
+        state_ = kStateUninitialized;
+        return;
+    }
+
+    uint16_t reg = regs_.control_register_2;
+    if (enabled) {
+        reg |= (0b11 << 4); // DC_CAL_CH1P and DC_CAL_CH2P
+    } else {
+        reg &= ~(0b11 << 4);
+    }
+    dc_calibration_tx_buf_ = build_ctrl_word(DRV8301_CtrlMode_Write, kRegNameControl2, reg);
+
+    dc_calibration_task_.config = spi_config_;
+    dc_calibration_task_.ncs_gpio = ncs_gpio_;
+    dc_calibration_task_.tx_buf = reinterpret_cast<const uint8_t*>(&dc_calibration_tx_buf_);
+    dc_calibration_task_.rx_buf = nullptr;
+    dc_calibration_task_.length = 1; // One 16-bit frame.
+    dc_calibration_task_.on_complete = [](void* ctx, bool success) {
+        auto* self = static_cast<Drv8301*>(ctx);
+        if (!success) {
+            self->state_ = kStateUninitialized;
+        }
+        Stm32SpiArbiter::release_task(&self->dc_calibration_task_);
+    };
+    dc_calibration_task_.on_complete_ctx = this;
+    spi_arbiter_->transfer_async(&dc_calibration_task_);
 }

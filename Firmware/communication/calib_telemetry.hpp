@@ -12,9 +12,10 @@ enum CalibTelemetryRecordType : uint8_t {
     CALIB_TELEMETRY_ENC   = 3, // encoder count event: timestamp + enc_count (stored in raw_phC)
 };
 
-// One 8 kHz control-loop sample streamed over USB (24 bytes, little-endian on
+// One 8 kHz control-loop sample streamed over USB (32 bytes, little-endian on
 // the wire): [u8 type][u8 pad x3][u32 i_meas_timestamp]
 //            [f32 ofs_phB][f32 ofs_phC][f32 raw_phB][f32 raw_phC]
+//            [f32 vbus_v_raw][f32 vbus_v_ofs]
 // ofs_phX = 0.5f * (ofs1_phX + ofs2_phX): average of the two offset samples
 // bracketing the raw sample (same correction as CalibratorImpl uses).
 // type = CALIB_TELEMETRY_DATA for a normal sample; START/END markers bound a run.
@@ -26,8 +27,10 @@ struct CalibTelemetryRecord {
     float ofs_phC;
     float raw_phB;
     float raw_phC;
+    float vbus_v_raw;
+    float vbus_v_ofs;
 };
-static_assert(sizeof(CalibTelemetryRecord) == 24, "telemetry record must be 24 bytes");
+static_assert(sizeof(CalibTelemetryRecord) == 32, "telemetry record must be 32 bytes");
 
 // Ring buffer. The control-loop ISR is the data producer; START/END markers are
 // pushed from the calibrator thread (guarded by a critical section). The USB
@@ -35,7 +38,7 @@ static_assert(sizeof(CalibTelemetryRecord) == 24, "telemetry record must be 24 b
 // and the overflow counter is incremented, so the host can detect lost data.
 class CalibTelemetry {
 public:
-    static constexpr uint32_t BUF_SIZE = 1024; // records (24 B each = 24 KB)
+    static constexpr uint32_t BUF_SIZE = 1024; // records (32 B each = 32 KB)
 
     void reset();                                // clear buffer + overflow (call with producer stopped)
     bool push(const CalibTelemetryRecord& r);    // data push (ISR context, critical section)

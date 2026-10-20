@@ -696,7 +696,7 @@ bool Calibrator::runRecordPass2(T& update_handler, const SamplingStartState& sta
         }
         is_first = false;
         // run record pass
-        if (!runMotorForTime([&](){ return update_handler.getLimitImpl().isFinished(); }, 2.0f, is_finished)) {
+        if (!runMotorForTime([&](){ return update_handler.getLimitImpl().isFinished(); }, 2.5f, is_finished)) {
             return false;
         }
 
@@ -706,7 +706,7 @@ bool Calibrator::runRecordPass2(T& update_handler, const SamplingStartState& sta
             impl_.setControlParams(ctrl_params);
             impl_.clearUpdateHandler();
         }
-        if (!runMotorForTime(1.0f)) {
+        if (!runMotorForTime(1.5f)) {
             return false;
         }
     }
@@ -764,6 +764,25 @@ bool Calibrator::run()
     CalibratorSafeReturn _safe_return(impl_);
     // START!!!
     impl_.initMotor();
+
+    osDelay(5);
+    // Arm USB calibration telemetry (host drains it over interface 3 / EP2).
+    calib_telemetry.enabled = false;
+    calib_telemetry.reset();
+    calib_telemetry.push_marker(CALIB_TELEMETRY_START);
+    calib_telemetry.enabled = true;
+
+    {
+        CalibratorImpl::ControlParams ctrl_params{};
+        ctrl_params.voltage_value_and_time = std::make_pair(0.0f, 0.1f);
+        ctrl_params.phase_vel = 0.0f;
+        CRITICAL_SECTION() {
+            impl_.setControlParams(ctrl_params);
+        }
+        if (!runMotorForTime(5.0f)) {
+            return false;
+        }
+    }
 
     // go to start position for start_lock_settle_duration
     {
@@ -964,11 +983,17 @@ bool Calibrator::run()
     osDelay(5);
 #endif
 
-    // Arm USB calibration telemetry (host drains it over interface 3 / EP2).
-    calib_telemetry.enabled = false;
-    calib_telemetry.reset();
-    calib_telemetry.push_marker(CALIB_TELEMETRY_START);
-    calib_telemetry.enabled = true;
+    {
+        CalibratorImpl::ControlParams ctrl_params{};
+        ctrl_params.voltage_value_and_time = std::make_pair(0.0f, 0.1f);
+        ctrl_params.phase_vel = 0.0f;
+        CRITICAL_SECTION() {
+            impl_.setControlParams(ctrl_params);
+        }
+        if (!runMotorForTime(5.0f)) {
+            return false;
+        }
+    }
 
     runRecordPass2(stop_at_limit_with_record_handler, hi_start_state, hi_start_phase, R * config_.record_current_1);
 

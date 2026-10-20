@@ -149,7 +149,7 @@ void CustomProtocol::process_command(uint8_t cmd, uint8_t req_id, const uint8_t*
             break;
         }
 
-        case 0x02: { // read telemetry: [u32 overflow][N x 24-byte records], written straight into tx_buf_
+        case 0x02: { // read telemetry: [u32 overflow][N x 32-byte records], written straight into tx_buf_
             uint32_t overflow = calib_telemetry.overflow_count();
 
             uint8_t* p = begin_response(0, req_id);

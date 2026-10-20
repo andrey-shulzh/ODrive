@@ -7,6 +7,9 @@
 
 #include <FreeRTOSConfig.h> // for configTOTAL_HEAP_SIZE
 
+extern float vbus_v_raw; // defined in board.cpp
+extern float vbus_v_ofs;
+
 constexpr uint32_t MAX_CCMRAM = (65536 - configTOTAL_HEAP_SIZE);
 static_assert(CALIB_MAX_SAMPLES * 2 * sizeof(CalibratorSample) <= MAX_CCMRAM);
 
@@ -60,7 +63,7 @@ bool CalibratorImpl::update(uint32_t i_meas_timestamp, uint32_t ctrl_timestamp)
     const Iph_ABC_t Iph_ofs2 = axis_->motor_.last_ofs_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
     const Iph_ABC_t Iph_raw = axis_->motor_.last_raw_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
 
-#if 0
+#if 1
     if (axis_->axis_num_ == 0 && calib_telemetry.enabled) {
         CalibTelemetryRecord r{};
         r.type = CALIB_TELEMETRY_DATA;
@@ -69,6 +72,8 @@ bool CalibratorImpl::update(uint32_t i_meas_timestamp, uint32_t ctrl_timestamp)
         r.ofs_phC = 0.5f * (Iph_ofs1.phC + Iph_ofs2.phC);
         r.raw_phB = Iph_raw.phB;
         r.raw_phC = Iph_raw.phC;
+        r.vbus_v_raw = vbus_v_raw;
+        r.vbus_v_ofs = vbus_v_ofs;
         calib_telemetry.push(r);
     }
 #endif

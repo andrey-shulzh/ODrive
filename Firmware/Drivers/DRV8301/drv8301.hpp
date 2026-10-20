@@ -78,6 +78,17 @@ public:
      */
     bool set_enabled(bool enabled) final { return true; }
 
+    /**
+     * @brief Enables or disables the DRV8301 DC calibration mode for both
+     * current shunt amplifier channels.
+     *
+     * Queues one SPI DMA transfer and returns without waiting. Can be called
+     * from interrupt context. Calibration changes when the transfer completes.
+     * A failed transfer or a call before the previous calibration transfer has
+     * completed takes the driver out of ready state.
+     */
+    void set_dc_calibration(bool enabled);
+
     FaultType_e get_error();
 
     float get_midpoint() final {
@@ -133,6 +144,8 @@ private:
     // We don't put these buffers on the stack because we place the stack in
     // a RAM section which cannot be used by DMA.
     uint16_t tx_buf_, rx_buf_;
+    uint16_t dc_calibration_tx_buf_;
+    Stm32SpiArbiter::SpiTask dc_calibration_task_{};
 
     enum {
         kStateUninitialized,

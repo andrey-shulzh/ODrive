@@ -19,8 +19,8 @@ Commands:
   0x00  echo      -> args returned unchanged
   0x01  telemetry -> args = [u16 LE count], returns min(count, 256) bytes of
                      pattern 0,1,2,...
-  0x02  read telemetry -> [u32 overflow][N x 24-byte records]
-                     record = [u8 type][u8 pad x3][u32 timestamp][f32 ofs_phB][f32 ofs_phC][f32 raw_phB][f32 raw_phC]
+  0x02  read telemetry -> [u32 overflow][N x 32-byte records]
+                     record = [u8 type][u8 pad x3][u32 timestamp][f32 ofs_phB][f32 ofs_phC][f32 raw_phB][f32 raw_phC][f32 vbus_v_raw][f32 vbus_v_ofs]
                      ofs_phX = 0.5 * (ofs1_phX + ofs2_phX), the average offset around raw
                      type: 0=data, 1=START, 2=END, 3=ENC (enc_count in raw_phC)
   0x04  trigger calibration -> starts encoder offset calibration on axis 0
@@ -137,7 +137,7 @@ def telemetry(ep_out, ep_in, count, req_id=1):
     return request(ep_out, ep_in, 0x01, 2, struct.pack("<H", count), req_id)
 
 
-RECORD = struct.Struct("<B3xIffff")  # type u8 + pad3 + timestamp u32 + 4 floats
+RECORD = struct.Struct("<B3xIffffff")  # type u8 + pad3 + timestamp u32 + 6 floats
 
 START, DATA, END, ENC = 1, 0, 2, 3
 
@@ -157,10 +157,10 @@ def trigger_calibration(ep_out, ep_in, req_id=1):
 
 
 def _save(records, out_path):
-    with open(out_path, "w") as f:
-        f.write("timestamp,ofs_phB,ofs_phC,raw_phB,raw_phC\n")
-        for ts, a, b, c, d in records:
-            f.write("%u,%.6f,%.6f,%.6f,%.6f\n" % (ts, a, b, c, d))
+    with open(out_path, "w") as fp:
+        fp.write("timestamp,ofs_phB,ofs_phC,raw_phB,raw_phC,vbus_v_raw,vbus_v_ofs\n")
+        for ts, a, b, c, d, e, f in records:
+            fp.write("%u,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n" % (ts, a, b, c, d, e, f))
 
 
 def _save_enc(enc_records, out_path):
@@ -194,7 +194,7 @@ def drain_telemetry(ep_out, ep_in, out_path=None):
             ovf, recs, _ = read_telemetry(ep_out, ep_in, req_id=rid)
             rid = (rid + 1) & 0xFF
             overflow = ovf  # monotonic within a run
-            for t, ts, a, b, c, d in recs:
+            for t, ts, a, b, c, d, e, f in recs:
                 if t == START:
                     records = []
                     enc_records = []
@@ -204,7 +204,7 @@ def drain_telemetry(ep_out, ep_in, out_path=None):
                     break
                 elif started:
                     if t == DATA:
-                        records.append((ts, a, b, c, d))
+                        records.append((ts, a, b, c, d, e, f))
                     elif t == ENC:
                         enc_records.append((ts, int(round(d))))
     except KeyboardInterrupt:

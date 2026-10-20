@@ -70,13 +70,14 @@ void Stm32SpiArbiter::transfer_async(SpiTask* task) {
         while (*ptr)
             ptr = &(*ptr)->next;
         *ptr = task;
-    }
 
-    // If the list was empty before, kick off the SPI arbiter now
-    if (ptr == &task_list_) {
-        if (!start()) {
-            if (task->on_complete) {
-                (*task->on_complete)(task->on_complete_ctx, false);
+        // Keep enqueue and start atomic with respect to higher-priority IRQs.
+        if (ptr == &task_list_) {
+            if (!start()) {
+                task_list_ = task->next;
+                if (task->on_complete) {
+                    (*task->on_complete)(task->on_complete_ctx, false);
+                }
             }
         }
     }
@@ -108,22 +109,28 @@ bool Stm32SpiArbiter::transfer(SPI_InitTypeDef config, Stm32Gpio ncs_gpio, const
 }
 
 void Stm32SpiArbiter::on_complete() {
-    if (!task_list_) {
-        return; // this should not happen
-    }
-
-    // Wrap up transfer
-    task_list_->ncs_gpio.write(true);
-    if (task_list_->on_complete) {
-        (*task_list_->on_complete)(task_list_->on_complete_ctx, true);
-    }
-
-    // Start next task if any
-    SpiTask* next = nullptr;
+    // A higher-priority caller must not reuse a task released by its callback
+    // until it has been removed from the queue and the next transfer started.
     CRITICAL_SECTION() {
-        next = task_list_ = task_list_->next;
-    }
-    if (next) {
-        start();
+        if (!task_list_) {
+            return; // this should not happen
+        }
+
+        SpiTask* completed = task_list_;
+        completed->ncs_gpio.write(true);
+        if (completed->on_complete) {
+            (*completed->on_complete)(completed->on_complete_ctx, true);
+        }
+        task_list_ = completed->next;
+
+        // Drop failed starts as well, so an unsuccessful DMA launch cannot
+        // leave the queue permanently stuck.
+        while (task_list_ && !start()) {
+            SpiTask* failed = task_list_;
+            task_list_ = failed->next;
+            if (failed->on_complete) {
+                (*failed->on_complete)(failed->on_complete_ctx, false);
+            }
+        }
     }
 }

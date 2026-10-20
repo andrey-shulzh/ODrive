@@ -609,6 +609,20 @@ void ADC_DMA_ReadyHandler(void) {
     }
     counting_down_ = counting_down;
 
+    if (counting_down) {
+        // Both motors' offset samples are complete. Queue restoration of
+        // current sensing independently of control loop execution time.
+        m0_gate_driver.set_dc_calibration(false);
+        m1_gate_driver.set_dc_calibration(false);
+    }
+    else
+    {
+        // This sample was taken in SVM vector 0 (low-side FETs conducting). Enable
+        // the gate driver's DC calibration mode afterwards.
+        m0_gate_driver.set_dc_calibration(true);
+        m1_gate_driver.set_dc_calibration(true);
+    }
+
     timestamp_ += TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1);
 
     static bool _is_first_call = true;
@@ -692,18 +706,21 @@ void DMA2_Stream2_IRQHandler(void) {
     }
 }
 
+float vbus_v_raw;
+float vbus_v_ofs;
+
 void ControlLoop_IRQHandler(void) {
     COUNT_IRQ(ControlLoop_IRQn);
     uint32_t timestamp = timestamp_;
 
     // Ensure that all the ADCs are done
-    std::optional<Iph_ABC_t> current0;
-    std::optional<Iph_ABC_t> current1;
-
-    if (!fetch_and_reset_adcs(&current0, &current1)) {
+    std::optional<Iph_ABC_t> raw_current0;
+    std::optional<Iph_ABC_t> raw_current1;
+    if (!fetch_and_reset_adcs(&raw_current0, &raw_current1)) {
         motors[0].disarm_with_error(Motor::ERROR_BAD_TIMING);
         motors[1].disarm_with_error(Motor::ERROR_BAD_TIMING);
     }
+    vbus_v_raw = vbus_voltage;
 
     // If the motor FETs are not switching then we can't measure the current
     // because for this we need the low side FET to conduct.
@@ -711,14 +728,14 @@ void ControlLoop_IRQHandler(void) {
     // disarming and when the motor spins fast in idle). Passing an invalid
     // current reading would create problems with starting FOC.
     if (!(TIM1->BDTR & TIM_BDTR_MOE_Msk)) {
-        current0 = {0.0f, 0.0f};
+        raw_current0.reset();
     }
     if (!(TIM8->BDTR & TIM_BDTR_MOE_Msk)) {
-        current1 = {0.0f, 0.0f};
+        raw_current1.reset();
     }
 
-    motors[0].current_meas_cb(timestamp - TIM1_INIT_COUNT, current0);
-    motors[1].current_meas_cb(timestamp, current1);
+    motors[0].current_meas_cb(timestamp - TIM1_INIT_COUNT, raw_current0);
+    motors[1].current_meas_cb(timestamp, raw_current1);
 
     odrv.control_loop_cb(timestamp);
 
@@ -728,13 +745,16 @@ void ControlLoop_IRQHandler(void) {
         while (!adc_regular_ready);
     }
 
-    if (!fetch_and_reset_adcs(&current0, &current1)) {
+    std::optional<Iph_ABC_t> ofs_current0;
+    std::optional<Iph_ABC_t> ofs_current1;
+    if (!fetch_and_reset_adcs(&ofs_current0, &ofs_current1)) {
         motors[0].disarm_with_error(Motor::ERROR_BAD_TIMING);
         motors[1].disarm_with_error(Motor::ERROR_BAD_TIMING);
     }
+    vbus_v_ofs = vbus_voltage;
 
-    motors[0].dc_calib_cb(timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1) - TIM1_INIT_COUNT, current0);
-    motors[1].dc_calib_cb(timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1), current1);
+    motors[0].dc_calib_cb(timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1) - TIM1_INIT_COUNT, ofs_current0);
+    motors[1].dc_calib_cb(timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1), ofs_current1);
 
     motors[0].pwm_update_cb(timestamp + 3 * TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1) - TIM1_INIT_COUNT);
     motors[1].pwm_update_cb(timestamp + 3 * TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1));

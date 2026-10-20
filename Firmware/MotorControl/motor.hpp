@@ -117,6 +117,12 @@ public:
     bool is_calibrated_ = false; // Set in apply_config()
     std::optional<Iph_ABC_t> current_meas_;
     Iph_ABC_t DC_calib_ = {0.0f, 0.0f, 0.0f};
+    // Residual between the raw current zero-point and the interpolated "ofs"
+    // reference, measured at the start of every arming sequence.
+    std::optional<Iph_ABC_t> dc_calib_bias_;
+    Iph_ABC_t dc_calib_bias_sum_ = {0.0f, 0.0f, 0.0f};
+    uint32_t dc_calib_bias_count_ = 0;
+    
     float dc_calib_running_since_ = 0.0f; // current sensor calibration needs some time to settle
     float I_bus_ = 0.0f; // this motors contribution to the bus current
     float phase_current_rev_gain_ = 0.0f; // Reverse gain for ADC to Amps (to be set by DRV8301_setup)
