@@ -15,12 +15,6 @@ public:
 
     static CalibratorSample* getSamples1();
     static CalibratorSample* getSamples2();
-#if CALIB_RECCORD_I
-    static CalibratorSample* getISamples();
-    volatile bool enable_reccord_I_ = false;
-    volatile bool enable_reccord_I_x3_ = false;
-    volatile uint32_t reccord_I_idx_ = 0;
-#endif
 
     CalibratorImpl() = default;
 

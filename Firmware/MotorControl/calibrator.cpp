@@ -10,9 +10,11 @@
 #include <Drivers/STM32/stm32_system.h> // for CRITICAL_SECTION
 #include <cmsis_os.h> // for osDelay
 
+#include "communication/calib_telemetry.hpp"
+
 
 #define DEBUG_LOG 1
-#define DEBUG_FAST_EXIT_NO_MAPS 1
+#define DEBUG_FAST_EXIT_NO_MAPS 0
 
 
 class MeasureCurrentUpdateHandler : public CalibratorUpdateHandler
@@ -573,6 +575,25 @@ bool Calibrator::runMotor(F&& func, float timeout_seconds, bool error_on_timeout
     return true;
 }
 
+template <typename F>
+bool Calibrator::runMotorForTime(F&& func, float timeout_seconds, bool& is_finished)
+{
+    size_t timeout_count = size_t(timeout_seconds * 1000.0f);
+    for (size_t i = 0; i < timeout_count; ++i) {
+        if (impl_.isAbortOrMotorError()) {
+            impl_.shutdownMotor();
+            return false;
+        }
+        if (func()) {
+            is_finished = true;
+            return true;
+        }
+        osDelay(1);
+    }
+    is_finished = false;
+    return true;
+}
+
 bool Calibrator::runMotorForTime(float duration_seconds)
 {
     return runMotor([](){ return false; }, duration_seconds, /*error_on_timeout=*/false);
@@ -640,6 +661,58 @@ bool Calibrator::runRecordPass(T& update_handler, const SamplingStartState& star
     return true;
 }
 
+template <typename T>
+bool Calibrator::runRecordPass2(T& update_handler, const SamplingStartState& start_state, float start_phase, float set_voltage)
+{
+    {
+        CalibratorImpl::ControlParams ctrl_params{};
+        ctrl_params.phase_dist = start_phase;
+        ctrl_params.voltage_value_and_time = std::make_pair(set_voltage, 0.5f);
+        CRITICAL_SECTION() {
+            impl_.setControlParams(ctrl_params);
+        }
+        // settle at start_phase
+        if (!runMotorForTime(config_.phase_settle_duration)) {
+            return false;
+        }
+    }
+
+    update_handler.getRecordImpl().init(nullptr);
+
+    bool is_first = true;
+    bool is_finished = false;
+    while (!is_finished)
+    {
+        CalibratorImpl::ControlParams ctrl_params{};
+        const float vel_dir = update_handler.getPhaseDir() * start_state.enc_step_dir_;
+        ctrl_params.phase_vel = vel_dir * config_.record_phase_speed;
+        ctrl_params.voltage_value_and_time = std::make_pair(set_voltage, 0.2f);
+        CRITICAL_SECTION() {
+            if (is_first) {
+                update_handler.restart(start_state, impl_.last_enc_count_, impl_.last_enc_time_);
+            }
+            impl_.setUpdateHandler(&update_handler);
+            impl_.setControlParams(ctrl_params);
+        }
+        is_first = false;
+        // run record pass
+        if (!runMotorForTime([&](){ return update_handler.getLimitImpl().isFinished(); }, 2.0f, is_finished)) {
+            return false;
+        }
+
+        ctrl_params.phase_vel = 0.0f;
+        ctrl_params.voltage_value_and_time = std::make_pair(0.0f, 0.2f);
+        CRITICAL_SECTION() {
+            impl_.setControlParams(ctrl_params);
+            impl_.clearUpdateHandler();
+        }
+        if (!runMotorForTime(1.0f)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 namespace
 {
     class CalibratorSafeReturn
@@ -651,6 +724,8 @@ namespace
                 calibrator_impl_.clearUpdateHandler();
             }
             calibrator_impl_.shutdownMotor();
+            calib_telemetry.enabled = false;
+            calib_telemetry.push_marker(CALIB_TELEMETRY_END);
         }
 
     private:
@@ -689,118 +764,6 @@ bool Calibrator::run()
     CalibratorSafeReturn _safe_return(impl_);
     // START!!!
     impl_.initMotor();
-
-#if 0
-    {
-        CalibratorImpl::ControlParams ctrl_params{};
-        ctrl_params.voltage_value_and_time = std::make_pair(config_.start_lock_voltage, 1.0f);
-        CRITICAL_SECTION() {
-            impl_.setControlParams(ctrl_params);
-        }
-        if (!runMotorForTime(5.0f)) {
-            return false;
-        }
-    }
-    {
-        CalibratorImpl::ControlParams ctrl_params{};
-        ctrl_params.phase_vel = config_.record_phase_speed;
-        CRITICAL_SECTION() {
-            impl_.setControlParams(ctrl_params);
-        }
-        if (!runMotorForTime(5.0f)) {
-            return false;
-        }
-    }
-
-    CRITICAL_SECTION() {
-        impl_.reccord_I_idx_ = 0;
-        impl_.enable_reccord_I_ = true;
-    }
-    if (!runMotorForTime(2.0f)) {
-        return false;
-    }
-    CRITICAL_SECTION() {
-        impl_.enable_reccord_I_ = false;
-    }
-
-    impl_.shutdownMotor();
-
-    {
-        const CalibratorSample* rec_I_samples = CalibratorImpl::getISamples();
-        printf("~~~samples_I~~~\n");
-        osDelay(5);
-        printf("idx,Iraw,Iofs\n");
-        osDelay(5);
-        for (uint32_t idx = 0; idx < impl_.reccord_I_idx_; ++idx)
-        {
-            const auto& s = rec_I_samples[idx];
-            printf("%d, %f, %f\n", idx, s.Id, s.Iq);
-            osDelay(5);
-        }
-        osDelay(100);
-    }
-    return false;
-#endif
-#if CALIB_RECCORD_I
-    if (!runMotorForTime(5.0f)) {
-        return false;
-    }
-    CRITICAL_SECTION() {
-        impl_.reccord_I_idx_ = 0;
-        impl_.enable_reccord_I_ = true;
-    }
-    if (!runMotorForTime(2.0f)) {
-        return false;
-    }
-    CRITICAL_SECTION() {
-        impl_.enable_reccord_I_ = false;
-    }
-
-    {
-        const CalibratorSample* rec_I_samples = CalibratorImpl::getISamples();
-        printf("~~~samples_I~~~\n");
-        osDelay(5);
-        printf("idx,Iraw,Iofs\n");
-        osDelay(5);
-        for (uint32_t idx = 0; idx < impl_.reccord_I_idx_; ++idx)
-        {
-            const auto& s = rec_I_samples[idx];
-            printf("%d, %f, %f\n", idx, s.Id, s.Iq);
-            osDelay(5);
-        }
-        osDelay(100);
-    }
-
-    CRITICAL_SECTION() {
-        impl_.reccord_I_idx_ = 0;
-        impl_.enable_reccord_I_x3_ = true;
-    }
-    if (!runMotorForTime(2.0f)) {
-        return false;
-    }
-    CRITICAL_SECTION() {
-        impl_.enable_reccord_I_x3_ = false;
-    }
-
-    impl_.shutdownMotor();
-
-    {
-        const CalibratorSample* rec_I_samples = CalibratorImpl::getISamples();
-        printf("~~~samples_I_x3~~~\n");
-        osDelay(5);
-        printf("idx,Iraw,Iofs\n");
-        osDelay(5);
-        for (uint32_t idx = 0; idx < impl_.reccord_I_idx_; ++idx)
-        {
-            const auto& s = rec_I_samples[idx];
-            printf("%d, %f, %f\n", idx, s.Id, s.Iq);
-            osDelay(5);
-        }
-        osDelay(100);
-    }
-
-    return false;
-#endif
 
     // go to start position for start_lock_settle_duration
     {
@@ -1001,6 +964,15 @@ bool Calibrator::run()
     osDelay(5);
 #endif
 
+    // Arm USB calibration telemetry (host drains it over interface 3 / EP2).
+    calib_telemetry.enabled = false;
+    calib_telemetry.reset();
+    calib_telemetry.push_marker(CALIB_TELEMETRY_START);
+    calib_telemetry.enabled = true;
+
+    runRecordPass2(stop_at_limit_with_record_handler, hi_start_state, hi_start_phase, R * config_.record_current_1);
+
+#if 0
     // 2b. settle and go in direction for encoder decreasing to record samples
     if (!runRecordPass(stop_at_limit_with_record_handler, hi_start_state, CalibratorImpl::getSamples1(), max_range_timeout, hi_start_phase)) {
         return false;
@@ -1016,8 +988,10 @@ bool Calibrator::run()
     if (!runRecordPass(stop_at_limit_with_record_handler, hi_start_state, CalibratorImpl::getSamples2(), max_range_timeout, hi_start_phase)) {
         return false;
     }
+#endif
 
     // 5. return to center
+#if 0
     {
         const float center_phase = 0.5f * (lo_start_phase + hi_start_phase);
         const float center_phase_target = center_phase * phase_dir;
@@ -1043,9 +1017,38 @@ bool Calibrator::run()
             return false;
         }
     }
+#endif
+#if 0
+    {
+        const float center_phase = 0.5f * (lo_start_phase + hi_start_phase);
+        const float center_phase_target = center_phase * phase_dir;
+
+        // move to center_phase
+        CalibratorImpl::ControlParams ctrl_params{};
+        ctrl_params.phase_dist = hi_start_phase;
+        ctrl_params.phase_vel = -phase_dir * config_.center_phase_speed;
+        CRITICAL_SECTION() {
+            impl_.setControlParams(ctrl_params);
+        }
+        if (!runMotor([&](){ return (impl_.last_phase_dist_ * phase_dir <= center_phase_target); }, max_range_timeout)) {
+            return false;
+        }
+
+        // stop phase velocity and lock at center_phase
+        ctrl_params.phase_dist = center_phase;
+        ctrl_params.phase_vel = 0.0f;
+        CRITICAL_SECTION() {
+            impl_.setControlParams(ctrl_params);
+        }
+        if (!runMotorForTime(config_.center_lock_duration)) {
+            return false;
+        }
+    }
+#endif
 
     // FINISH!!!
     impl_.shutdownMotor();
+    return false;
 
 #if DEBUG_LOG
     {

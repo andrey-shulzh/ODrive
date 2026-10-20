@@ -3,14 +3,16 @@
 #include <string.h>
 #include <algorithm>
 
+#include "calib_telemetry.hpp"
 #include "interface_usb.h"
+#include <odrive_main.h>
 #include <cmsis_os.h>
 #include <freertos_vars.h>
 
 // Temporary debug output: written straight to the USB stdout sink (no printf /
 // no formatting, to avoid the newlib printf stack cost on the USB thread).
 // Set CUSTOM_PROTOCOL_DEBUG to 0 when done.
-#define CUSTOM_PROTOCOL_DEBUG 1
+#define CUSTOM_PROTOCOL_DEBUG 0
 #if CUSTOM_PROTOCOL_DEBUG
 static void cp_log(const char* s) {
     fibre::cbufptr_t buf{(const uint8_t*)s, (const uint8_t*)s + strlen(s)};
@@ -147,6 +149,28 @@ void CustomProtocol::process_command(uint8_t cmd, uint8_t req_id, const uint8_t*
             break;
         }
 
+        case 0x02: { // read telemetry: [u32 overflow][N x 24-byte records], written straight into tx_buf_
+            uint32_t overflow = calib_telemetry.overflow_count();
+
+            uint8_t* p = begin_response(0, req_id);
+            p[0] = (uint8_t)(overflow & 0xFF);
+            p[1] = (uint8_t)((overflow >> 8) & 0xFF);
+            p[2] = (uint8_t)((overflow >> 16) & 0xFF);
+            p[3] = (uint8_t)((overflow >> 24) & 0xFF);
+
+            uint32_t max_recs = (uint32_t)((sizeof(tx_buf_) - 6 - 4) / sizeof(CalibTelemetryRecord));
+            uint32_t n = calib_telemetry.pop(reinterpret_cast<CalibTelemetryRecord*>(p + 4), max_recs);
+
+            finish_response(4 + n * sizeof(CalibTelemetryRecord));
+            break;
+        }
+
+        case 0x04: { // trigger encoder offset calibration on axis 0 (async)
+            odrv.get_axis(0).requested_state_ = Axis::AXIS_STATE_ENCODER_OFFSET_CALIBRATION;
+            send_response(0, req_id, nullptr, 0);
+            break;
+        }
+
         default:
             send_response(1, req_id, nullptr, 0); // status 1 = unknown command
             break;
@@ -157,15 +181,27 @@ void CustomProtocol::send_response(uint8_t status, uint8_t req_id, const uint8_t
     if (len > sizeof(tx_buf_) - 6) {
         len = sizeof(tx_buf_) - 6;
     }
+    uint8_t* p = begin_response(status, req_id);
+    if (payload != nullptr && len > 0) {
+        memcpy(p, payload, len);
+    }
+    finish_response(len);
+}
+
+uint8_t* CustomProtocol::begin_response(uint8_t status, uint8_t req_id) {
     tx_buf_[0] = status;
     tx_buf_[1] = req_id;
+    return tx_buf_ + 6; // payload area
+}
+
+void CustomProtocol::finish_response(uint32_t len) {
+    if (len > sizeof(tx_buf_) - 6) {
+        len = sizeof(tx_buf_) - 6;
+    }
     tx_buf_[2] = (uint8_t)(len & 0xFF);
     tx_buf_[3] = (uint8_t)((len >> 8) & 0xFF);
     tx_buf_[4] = (uint8_t)((len >> 16) & 0xFF);
     tx_buf_[5] = (uint8_t)((len >> 24) & 0xFF);
-    if (payload != nullptr && len > 0) {
-        memcpy(tx_buf_ + 6, payload, len);
-    }
     tx_len_ = 6 + len;
     tx_pos_ = 0;
     start_tx_chunk();

@@ -42,6 +42,8 @@ private:
     void try_process();
     void process_command(uint8_t cmd, uint8_t req_id, const uint8_t* args, uint16_t arg_len);
     void send_response(uint8_t status, uint8_t req_id, const uint8_t* payload, uint32_t len);
+    uint8_t* begin_response(uint8_t status, uint8_t req_id); // returns writable payload area of tx_buf_
+    void finish_response(uint32_t len);                       // writes length header and starts TX
     void start_tx_chunk();
 
     fibre::AsyncStreamSource* rx_channel_ = nullptr;

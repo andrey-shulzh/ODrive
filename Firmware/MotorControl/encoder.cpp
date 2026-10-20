@@ -3,6 +3,8 @@
 #include <Drivers/STM32/stm32_system.h>
 #include <bitset>
 
+#include "communication/calib_telemetry.hpp"
+
 Encoder::Encoder(TIM_HandleTypeDef* timer, Stm32Gpio index_gpio,
                  Stm32Gpio hallA_gpio, Stm32Gpio hallB_gpio, Stm32Gpio hallC_gpio,
                  Stm32SpiArbiter* spi_arbiter) :
@@ -44,6 +46,9 @@ void Encoder::enc_phaseAB_cb() {
     {
         last_enc_count_ = enc_count;
         last_enc_time_ = curr_time;
+//        if (axis_->axis_num_ == 0 && calib_telemetry.enabled) {
+//            calib_telemetry.push_encoder(curr_time, enc_count);
+//        }
     }
 }
 #endif

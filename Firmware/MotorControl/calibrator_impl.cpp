@@ -3,6 +3,8 @@
 #include "axis.hpp"
 #include "utils.hpp"
 
+#include "communication/calib_telemetry.hpp"
+
 #include <FreeRTOSConfig.h> // for configTOTAL_HEAP_SIZE
 
 constexpr uint32_t MAX_CCMRAM = (65536 - configTOTAL_HEAP_SIZE);
@@ -22,14 +24,6 @@ CalibratorSample* CalibratorImpl::getSamples1() { return nullptr; }
 CalibratorSample* CalibratorImpl::getSamples2() { return nullptr; }
 #endif
 
-#if CALIB_RECCORD_I
-static_assert(CALIB_MAX_I_SAMPLES * sizeof(CalibratorSample) <= MAX_CCMRAM);
-
-__attribute__((section(".ccmram")))
-static CalibratorSample calib_I_samples[CALIB_MAX_I_SAMPLES];
-
-CalibratorSample* CalibratorImpl::getISamples() { return calib_I_samples; }
-#endif
 
 CalibratorUpdateHandler CalibratorImpl::empty_update_handler_;
 
@@ -66,23 +60,19 @@ bool CalibratorImpl::update(uint32_t i_meas_timestamp, uint32_t ctrl_timestamp)
     const Iph_ABC_t Iph_ofs2 = axis_->motor_.last_ofs_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
     const Iph_ABC_t Iph_raw = axis_->motor_.last_raw_current_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
 
-    const Iph_ABC_t Iph_meas = axis_->motor_.current_meas_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
-#if CALIB_RECCORD_I
-    if (enable_reccord_I_ && reccord_I_idx_ < CALIB_MAX_I_SAMPLES) {
-        auto& s = calib_I_samples[reccord_I_idx_++];
-        // Ialpha_raw
-        s.Id = Iph_raw.phB - 0.5f * (Iph_ofs1.phB + Iph_ofs2.phB);
-        // Ialpha_ofs
-        s.Iq = Iph_meas.phB;
-    }
-    if (enable_reccord_I_x3_ && reccord_I_idx_ < CALIB_MAX_I_SAMPLES) {
-        auto& s = calib_I_samples[reccord_I_idx_++];
-        // Ialpha_raw
-        s.Id = Iph_raw.phC - 0.5f * (Iph_ofs1.phC + Iph_ofs2.phC);
-        // Ialpha_ofs
-        s.Iq = Iph_meas.phC;
+#if 0
+    if (axis_->axis_num_ == 0 && calib_telemetry.enabled) {
+        CalibTelemetryRecord r{};
+        r.type = CALIB_TELEMETRY_DATA;
+        r.timestamp = i_meas_timestamp;
+        r.ofs_phB = 0.5f * (Iph_ofs1.phB + Iph_ofs2.phB);
+        r.ofs_phC = 0.5f * (Iph_ofs1.phC + Iph_ofs2.phC);
+        r.raw_phB = Iph_raw.phB;
+        r.raw_phC = Iph_raw.phC;
+        calib_telemetry.push(r);
     }
 #endif
+    const Iph_ABC_t Iph_meas = axis_->motor_.current_meas_.value_or(Iph_ABC_t{0.0f, 0.0f, 0.0f});
 
     // Iph_raw should be measured right in the middle between Iph_ofs1 & Iph_ofs2!
     const float I_phB = Iph_raw.phB - 0.5f * (Iph_ofs1.phB + Iph_ofs2.phB);

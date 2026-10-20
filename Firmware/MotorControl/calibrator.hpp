@@ -33,7 +33,7 @@ public:
         int32_t sample_size = 5;
 
         float max_motor_degree_range = 130.0f;
-        float record_phase_speed = _PI / 2.0f;
+        float record_phase_speed = _PI / 4.0f;
 
         float phase_speed_threshold_mult = 3.0f;
 
@@ -71,6 +71,9 @@ private:
     template <typename F>
     bool runMotor(F&& func, float timeout_seconds, bool error_on_timeout = true);
 
+    template <typename F>
+    bool runMotorForTime(F&& func, float duration_seconds, bool& is_finished);
+
     bool runMotorForTime(float duration_seconds);
 
     bool runDetectMotion(DetectMotionUpdateHandler& update_handler, const SamplingStartState& start_state, int32_t start_enc_count);
@@ -78,6 +81,9 @@ private:
     template <typename T>
     bool runRecordPass(T& update_handler, const SamplingStartState& start_state, CalibratorSample* rec_samples, float timeout,
                        std::optional<float> start_phase = std::nullopt, std::optional<float> set_voltage = std::nullopt);
+
+    template <typename T>
+    bool runRecordPass2(T& update_handler, const SamplingStartState& start_state, float start_phase, float set_voltage);
 
     float buildMaps(const SamplingStartState& lo_start_state, const SamplingStartState& hi_start_state);
 
